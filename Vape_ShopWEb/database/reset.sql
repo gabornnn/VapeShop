@@ -1,0 +1,36 @@
+-- ============================================================================
+--  VAPE CO. — reset script (development only)
+--  Vape_ShopWEb / database / reset.sql
+--
+--  Drops every table so database\schema.sql can be imported again from scratch.
+--  All the data goes with it — this is a wipe, not a backup.
+--
+--  USE WITH CARE. There is no confirmation prompt in SQL.
+--
+--  Command line:
+--    C:\xampp\mysql\bin\mysql.exe -u root < database\reset.sql
+-- ============================================================================
+
+DROP DATABASE IF EXISTS vape_shop;
+
+-- If you would rather keep the database itself, run the DROP TABLE statements
+-- below instead of the DROP DATABASE above:
+--
+--   SET FOREIGN_KEY_CHECKS = 0;
+--   DROP TABLE IF EXISTS product_reviews;
+--   DROP TABLE IF EXISTS wishlist;
+--   DROP TABLE IF EXISTS coupons;
+--   DROP TABLE IF EXISTS audit_log;
+--   DROP TABLE IF EXISTS login_attempts;
+--   DROP TABLE IF EXISTS order_status_history;
+--   DROP TABLE IF EXISTS order_items;
+--   DROP TABLE IF EXISTS orders;
+--   DROP TABLE IF EXISTS addresses;
+--   DROP TABLE IF EXISTS cart_items;
+--   DROP TABLE IF EXISTS carts;
+--   DROP TABLE IF EXISTS product_variants;
+--   DROP TABLE IF EXISTS products;
+--   DROP TABLE IF EXISTS categories;
+--   DROP TABLE IF EXISTS users;
+--   DROP TABLE IF EXISTS roles;
+--   SET FOREIGN_KEY_CHECKS = 1;

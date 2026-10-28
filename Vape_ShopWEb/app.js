@@ -3,10 +3,10 @@
    Vanilla JS storefront controller (no frameworks, no build step).
 
    Module organization:
-    1.  Utilities (DOM, storage, money, focus trap / layers)
+    1.  Utilities (DOM, storage, money, focus trap / layers, API client)
     2.  Constants
     3.  State + store (cart mutations all funnel through commit())
-    4.  Data loading (products.json behind one normalizer)
+    4.  Data loading (api/catalog.php behind one normalizer)
     5.  Age gate
     6.  Catalog (chips, nav, search, cards, empty/error states)
     7.  Quick-view modal
@@ -53,6 +53,73 @@ const storage = {
 /** Philippine peso formatting, used for every price in the UI. */
 const moneyFmt = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' });
 const money = (n) => moneyFmt.format(n);
+
+/**
+ * The JSON API client.
+ *
+ * Every endpoint answers with exactly one of two shapes:
+ *
+ *   success  { "ok": true,  "data": { ... } }
+ *   failure  { "ok": false, "error": { "code": "...", "message": "...", "fields": { ... } } }
+ *
+ * So this helper can always promise the same thing to its caller:
+ *   - on success it RESOLVES with `json.data`  (NOT json.data.data)
+ *   - on failure it REJECTS with an Error that carries `.code` and `.fields`
+ *
+ * The CSRF token comes from window.__APP__.csrf, which includes/head.php
+ * prints into the page.
+ */
+const API = {
+  /** Build a URL under the api/ folder from a path like 'cart.php'. */
+  url(path) {
+    const base = window.__APP__?.apiBase ?? '/api/';
+    const p = String(path ?? '');
+    // Already absolute (starts with '/') or already inside the api folder.
+    if (p.startsWith('/') || p.startsWith(base)) return p;
+    return base + p.replace(/^\/+/, '');
+  },
+
+  async request(path, options = {}) {
+    const { headers: extraHeaders, body, ...rest } = options;
+    const headers = { Accept: 'application/json', ...(extraHeaders || {}) };
+
+    let payload = body;
+    if (payload && typeof payload !== 'string') {
+      headers['Content-Type'] = 'application/json';
+      payload = JSON.stringify(payload);
+    }
+
+    // State-changing requests must prove they came from a page we served.
+    if ((options.method || 'GET').toUpperCase() !== 'GET') {
+      headers['X-CSRF-Token'] = window.__APP__?.csrf || '';
+    }
+
+    const res = await fetch(this.url(path), { ...rest, headers, body: payload });
+
+    const json = await res.json().catch(() => ({
+      ok: false,
+      error: { code: 'SERVER_ERROR', message: 'Unexpected server response.' },
+    }));
+
+    if (!json.ok) {
+      const err = new Error(json.error?.message || 'Request failed');
+      err.code = json.error?.code || 'SERVER_ERROR';
+      err.fields = json.error?.fields || null;
+      err.status = res.status;
+      throw err;
+    }
+
+    return json.data; // ← .data, not .data.data
+  },
+
+  get(path) {
+    return this.request(path);
+  },
+
+  post(path, body) {
+    return this.request(path, { method: 'POST', body });
+  },
+};
 
 const clampQty = (n) => Math.min(QTY_MAX, Math.max(1, Math.floor(Number(n) || 1)));
 
@@ -117,14 +184,25 @@ const VAT_RATE = 0.12;
 const FLAT_SHIPPING = 150;
 const FREE_SHIPPING_ABOVE = 2000;
 
-const CATEGORIES = [
-  { slug: 'all', label: 'All' },
-  { slug: 'disposables', label: 'Disposables' },
-  { slug: 'pods', label: 'Pods' },
-  { slug: 'batteries', label: 'Batteries' },
-  { slug: 'e-juice', label: 'E-Juice' },
-  { slug: 'cartridges', label: 'Cartridges' },
-  { slug: 'kits', label: 'Kits' },
+/**
+ * Categories come from the database, so the admin can rename or reorder them.
+ * This list is only a fallback for the first paint (or if the API is down).
+ */
+const CATEGORY_FALLBACK = [
+  { slug: 'all', label: 'All', iconKey: '' },
+  { slug: 'disposables', label: 'Disposables', iconKey: 'cat-disposables' },
+  { slug: 'pods', label: 'Pods', iconKey: 'cat-pods' },
+  { slug: 'batteries', label: 'Batteries', iconKey: 'cat-batteries' },
+  { slug: 'e-juice', label: 'E-Juice', iconKey: 'cat-e-juice' },
+  { slug: 'cartridges', label: 'Cartridges', iconKey: 'cat-cartridges' },
+  { slug: 'kits', label: 'Kits', iconKey: 'cat-kits' },
+];
+
+const SORT_OPTIONS = [
+  { id: 'featured', label: 'Featured' },
+  { id: 'price_asc', label: 'Price ↑' },
+  { id: 'price_desc', label: 'Price ↓' },
+  { id: 'newest', label: 'Newest' },
 ];
 
 const PAYMENT_METHODS = [
@@ -139,8 +217,14 @@ const EMPTY_SHIPPING = { name: '', phone: '', address: '', notes: '' };
 
 const state = {
   products: [],
+  categories: [],
   activeCategory: 'all',
   query: '',
+  sort: 'featured',
+  page: 1,
+  pageSize: 24,
+  total: 0,
+  totalPages: 1,
   cart: [],
   checkout: {
     step: 1, // 1 summary, 2 shipping, 3 payment, 4 confirmation
@@ -152,93 +236,266 @@ const state = {
   qv: null, // active quick-view selection
 };
 
-const byId = (id) => state.products.find((p) => p.id === id);
+const byId = (id) => state.products.find((p) => p.id === String(id));
 
-/** Line identity: the same product in a different strength/flavor is a different line. */
+/** Line identity: a variant is the line identity on the server. */
 const lineKey = (id, strength, flavor) => `${id}::${strength || ''}::${flavor || ''}`;
 
-function computeTotals(cart) {
-  const subtotal = cart.reduce((sum, l) => sum + l.price * l.qty, 0);
-  const vat = Math.round(subtotal * VAT_RATE * 100) / 100;
-  const shipping = subtotal > 0 && subtotal < FREE_SHIPPING_ABOVE ? FLAT_SHIPPING : 0;
-  return { subtotal, vat, shipping, total: subtotal + vat + shipping };
-}
-
 /**
- * The cart store. Every mutation goes through commit(), which persists
- * and then re-renders badge + drawer + totals together — they can never disagree.
+ * The cart store. Every mutation goes through the server. The client applies
+ * the server's cart snapshot so the badge, drawer and totals never disagree.
  */
 const store = {
-  load() {
-    const raw = storage.get(CART_KEY, []);
-    this.stateCart = null;
-    state.cart = Array.isArray(raw) ? raw.filter((l) =>
-      l && typeof l.id === 'string' && typeof l.name === 'string' &&
-      Number.isFinite(l.price) && Number.isFinite(l.qty)
-    ).map((l) => ({ ...l, qty: clampQty(l.qty) })) : [];
+  apply(data) {
+    if (!data) return;
+    state.cart = Array.isArray(data.items) ? data.items.map((item) => ({
+      key: `v:${item.variantId}`,
+      variantId: Number(item.variantId),
+      productId: Number(item.productId) || null,
+      id: String(item.productId || item.variantId),
+      name: String(item.name || ''),
+      price: Number(item.price) || 0,
+      image: typeof item.image === 'string' ? item.image : '',
+      qty: clampQty(item.qty),
+      strength: String(item.strength || ''),
+      flavor: String(item.flavor || ''),
+      stock: Number(item.stock) || 0,
+      inStock: item.inStock !== false,
+      available: item.available !== false,
+    })) : [];
+    state.cartTotals = data.totals || null;
+    state.cartCount = Number(data.count) || state.cart.reduce((n, l) => n + l.qty, 0);
   },
-  persist() { storage.set(CART_KEY, state.cart); },
-  commit() { this.persist(); renderAll(); },
 
-  addToCart(product, { strength = '', flavor = '', qty = 1 } = {}) {
-    const key = lineKey(product.id, strength, flavor);
-    const existing = state.cart.find((l) => l.key === key);
-    if (existing) existing.qty = clampQty(existing.qty + qty);
-    else state.cart.push({
-      key,
-      id: product.id,
-      name: product.name,
-      price: product.price,
-      image: product.image || '',
-      qty: clampQty(qty),
-      strength: strength || '',
-      flavor: flavor || '',
-    });
-    this.commit();
+  async load() {
+    try {
+      // Migrate legacy localStorage cart first.
+      await this.migrateLegacy();
+      const data = await API.get('cart.php');
+      this.apply(data);
+    } catch (err) {
+      console.error('Cart load failed:', err);
+      state.cart = [];
+      state.cartTotals = null;
+      state.cartCount = 0;
+    }
+    renderAll();
   },
-  setQty(key, qty) {
-    const line = state.cart.find((l) => l.key === key);
-    if (!line) return;
-    line.qty = clampQty(qty);
-    this.commit();
+
+  async migrateLegacy() {
+    const raw = storage.get(CART_KEY, null);
+    if (!Array.isArray(raw) || raw.length === 0) return;
+
+    const items = raw
+      .map((l) => {
+        // Old format: { id: productId (string), strength, flavor, qty }
+        const productId = String(l.id || '');
+        // We need slugs; look up in catalog if available
+        const product = state.products.find((p) => p.id === productId);
+        const slug = product?.slug || '';
+        if (!slug) return null;
+        return {
+          productSlug: slug,
+          strength: String(l.strength || ''),
+          flavor: String(l.flavor || ''),
+          qty: clampQty(l.qty),
+        };
+      })
+      .filter(Boolean);
+
+    if (items.length === 0) {
+      storage.remove(CART_KEY);
+      return;
+    }
+
+    try {
+      const data = await API.post('cart.php', {
+        action: 'merge',
+        items,
+        guestTokenHash: window.__APP__?.guestTokenHash || '',
+      });
+      this.apply(data);
+    } catch (err) {
+      console.error('Cart migration failed:', err);
+    }
+
+    storage.remove(CART_KEY);
   },
-  removeFromCart(key) {
-    state.cart = state.cart.filter((l) => l.key !== key);
-    this.commit();
+
+  async addToCart(product, { strength = '', flavor = '', qty = 1, variantId = null, unitPrice = null } = {}) {
+    const vid = Number(variantId) || Number(product.variants?.[0]?.id) || 0;
+    if (!vid) return;
+
+    // Optimistic badge update
+    const prevCount = state.cartCount;
+    state.cartCount = (state.cartCount || cartCount()) + clampQty(qty);
+    renderBadge();
+
+    try {
+      const data = await API.post('cart.php', { action: 'add', variantId: vid, qty: clampQty(qty) });
+      this.apply(data);
+    } catch (err) {
+      state.cartCount = prevCount;
+      console.error('Add to cart failed:', err);
+      toast('Could not add to cart. Please try again.');
+    }
+    renderAll();
   },
-  clearCart() {
-    state.cart = [];
-    this.commit();
+
+  async setQty(keyOrVariantId, qty) {
+    const variantId = typeof keyOrVariantId === 'string' && keyOrVariantId.startsWith('v:')
+      ? Number(keyOrVariantId.slice(2))
+      : Number(keyOrVariantId);
+
+    try {
+      const data = await API.post('cart.php', { action: 'update', variantId, qty: Number(qty) });
+      this.apply(data);
+    } catch (err) {
+      console.error('Update cart failed:', err);
+      toast('Could not update cart.');
+    }
+    renderAll();
+  },
+
+  async removeFromCart(keyOrVariantId) {
+    const variantId = typeof keyOrVariantId === 'string' && keyOrVariantId.startsWith('v:')
+      ? Number(keyOrVariantId.slice(2))
+      : Number(keyOrVariantId);
+
+    try {
+      const data = await API.post('cart.php', { action: 'remove', variantId });
+      this.apply(data);
+    } catch (err) {
+      console.error('Remove from cart failed:', err);
+      toast('Could not remove item.');
+    }
+    renderAll();
+  },
+
+  async clearCart() {
+    try {
+      const data = await API.post('cart.php', { action: 'clear' });
+      this.apply(data);
+    } catch (err) {
+      console.error('Clear cart failed:', err);
+    }
+    renderAll();
   },
 };
 
-const cartCount = () => state.cart.reduce((n, l) => n + l.qty, 0);
+const cartCount = () => state.cartCount ?? state.cart.reduce((n, l) => n + l.qty, 0);
 
 /* ---------- 4. Data loading ---------- */
 
-/** Single normalizer — swapping in a real API later is a one-line change here. */
+/**
+ * One normalizer for everything the catalog API sends back. Variants are the
+ * units that are really sold: a product plus a strength and a flavor.
+ */
 function normalizeProduct(raw) {
+  const strengths = Array.isArray(raw.strengths) ? raw.strengths.map(String) : [];
+  const flavors = Array.isArray(raw.flavors) ? raw.flavors.map(String) : [];
+  const variants = Array.isArray(raw.variants) ? raw.variants.map((v) => ({
+    id: String(v.id ?? ''),
+    sku: String(v.sku ?? ''),
+    strength: String(v.strength ?? ''),
+    flavor: String(v.flavor ?? ''),
+    price: Number(v.price) || 0,
+    stock: Math.max(0, Math.floor(Number(v.stock) || 0)),
+  })) : [];
+
   return {
     id: String(raw.id ?? ''),
+    slug: String(raw.slug ?? ''),
     category: String(raw.category ?? ''),
     name: String(raw.name ?? 'Unnamed product'),
     description: String(raw.description ?? ''),
+    brand: String(raw.brand ?? ''),
     price: Number(raw.price) || 0,
     image: typeof raw.image === 'string' ? raw.image : '',
-    strength: String(raw.strength ?? ''),
-    strengths: Array.isArray(raw.strengths) ? raw.strengths.map(String) : [],
-    flavors: Array.isArray(raw.flavors) ? raw.flavors.map(String) : [],
+    strength: strengths[0] || '',
+    strengths,
+    flavors,
+    variants,
+    stock: Math.max(0, Math.floor(Number(raw.stock) || 0)),
+    available: raw.available !== undefined
+      ? Boolean(raw.available)
+      : variants.some((v) => v.stock > 0),
     featured: Boolean(raw.featured), // reserved for a future homepage (no UI consumer)
   };
 }
 
-async function loadProducts() {
-  const res = await fetch('products.json', { cache: 'no-store' });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  const list = Array.isArray(data) ? data : data.products;
-  if (!Array.isArray(list)) throw new Error('Unexpected products.json shape');
-  return list.map(normalizeProduct);
+function normalizeCategory(raw) {
+  const slug = String(raw.slug ?? '');
+  return {
+    slug,
+    label: String(raw.name ?? slug),
+    iconKey: String(raw.iconKey ?? '') || `cat-${slug}`,
+  };
+}
+
+function categoriesForUi() {
+  return [{ slug: 'all', label: 'All', iconKey: '' }, ...state.categories];
+}
+
+function categoryFor(slug) {
+  return categoriesForUi().find((c) => c.slug === slug) || null;
+}
+
+function categoryLabel(slug) {
+  return categoryFor(slug)?.label || slug;
+}
+
+function categoryIcon(slug) {
+  return categoryFor(slug)?.iconKey || `cat-${slug}`;
+}
+
+/** Build the query string mirroring the shareable URL state. */
+function catalogQuery() {
+  const params = new URLSearchParams();
+  if (state.activeCategory !== 'all') params.set('category', state.activeCategory);
+  if (state.query) params.set('q', state.query);
+  if (state.sort !== 'featured') params.set('sort', state.sort);
+  if (state.page > 1) params.set('page', String(state.page));
+  return params.toString();
+}
+
+/** Read category, search, sort and page from the address bar. */
+function readCatalogState() {
+  const params = new URLSearchParams(location.search);
+  const sort = params.get('sort') || '';
+
+  state.activeCategory = params.get('category') || 'all';
+  state.query = (params.get('q') || '').trim();
+  state.sort = SORT_OPTIONS.some((s) => s.id === sort) ? sort : 'featured';
+  state.page = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
+
+  if (searchInput && searchInput.value !== state.query) searchInput.value = state.query;
+  if (searchInputM && searchInputM.value !== state.query) searchInputM.value = state.query;
+}
+
+/** Write the current view back to the address bar (refresh/share reproduces it). */
+function writeCatalogState() {
+  const url = new URL(location.href);
+  const set = (key, value) => {
+    if (value) url.searchParams.set(key, value);
+    else url.searchParams.delete(key);
+  };
+
+  set('category', state.activeCategory !== 'all' ? state.activeCategory : '');
+  set('q', state.query);
+  set('sort', state.sort !== 'featured' ? state.sort : '');
+  set('page', state.page > 1 ? String(state.page) : '');
+
+  history.replaceState(null, '', url);
+}
+
+async function loadCatalog() {
+  const search = catalogQuery();
+  const data = await API.get(search ? `catalog.php?${search}` : 'catalog.php');
+  if (!data || !Array.isArray(data.products)) {
+    throw new Error('Unexpected catalog response');
+  }
+  return data;
 }
 
 /* ---------- 5. Age gate ---------- */
@@ -290,9 +547,26 @@ const emptyEl = $('#empty-state');
 const errorEl = $('#error-panel');
 const searchInput = $('#search-input');
 const searchInputM = $('#search-input-m');
+const sortControlEl = $('#sort-control');
+const paginationEl = $('#pagination');
 
 function displayStrength(p) { return p.strengths[0] || p.strength || ''; }
 function displayFlavor(p) { return p.flavors[0] || ''; }
+
+/** The variant (product + strength + flavor) that actually gets sold. */
+function variantFor(p, strength, flavor) {
+  return p.variants.find(
+    (v) => v.strength === (strength || '') && v.flavor === (flavor || '')
+  ) || null;
+}
+
+/** First in-stock variant, preferring the strength/flavor shown on the card. */
+function defaultVariant(p) {
+  if (!p.variants.length) return null;
+  const preferred = variantFor(p, displayStrength(p), displayFlavor(p));
+  if (preferred && preferred.stock > 0) return preferred;
+  return p.variants.find((v) => v.stock > 0) || p.variants[0];
+}
 
 function productArt(p) {
   return p.image
@@ -301,58 +575,84 @@ function productArt(p) {
 }
 
 function buildChips() {
-  chipsEl.innerHTML = CATEGORIES.map((c) => `
+  chipsEl.innerHTML = categoriesForUi().map((c) => `
     <button class="chip${c.slug === state.activeCategory ? ' is-active' : ''}"
-            data-cat="${c.slug}" aria-pressed="${c.slug === state.activeCategory}">
-      ${c.slug === 'all' ? '' : `<svg aria-hidden="true"><use href="#cat-${c.slug}"></use></svg>`}
-      ${c.label}
+            data-cat="${esc(c.slug)}" aria-pressed="${c.slug === state.activeCategory}">
+      ${c.slug === 'all' ? '' : `<svg aria-hidden="true"><use href="#${esc(c.iconKey)}"></use></svg>`}
+      ${esc(c.label)}
     </button>`).join('');
 }
 
 function buildNav() {
-  navEl.innerHTML = CATEGORIES.map((c) => `
+  navEl.innerHTML = categoriesForUi().map((c) => `
     <button class="desktop-nav__link${c.slug === state.activeCategory ? ' is-active' : ''}"
-            data-cat="${c.slug}">${c.label}</button>`).join('');
+            data-cat="${esc(c.slug)}">${esc(c.label)}</button>`).join('');
 }
 
 function setCategory(slug) {
+  if (slug === state.activeCategory) return;
   state.activeCategory = slug;
+  state.page = 1;
   buildChips();
   buildNav();
-  renderCatalog();
+  writeCatalogState();
+  fetchCatalog();
 }
 
+let searchTimer = null;
 function setQuery(q) {
-  state.query = q;
-  if (searchInput.value !== q) searchInput.value = q;
-  if (searchInputM.value !== q) searchInputM.value = q;
-  renderCatalog();
+  const next = q.trim();
+  state.query = next;
+  state.page = 1;
+  if (searchInput.value !== next) searchInput.value = next;
+  if (searchInputM.value !== next) searchInputM.value = next;
+
+  // Debounce keystrokes so we do not fire one request per letter.
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    writeCatalogState();
+    fetchCatalog();
+  }, 250);
 }
 
-function matchesQuery(p, q) {
-  if (!q) return true;
-  const haystack = [p.name, p.description, p.category, displayStrength(p), ...p.strengths, ...p.flavors]
-    .join(' ').toLowerCase();
-  return haystack.includes(q);
+function setSort(sort) {
+  if (sort === state.sort) return;
+  state.sort = sort;
+  state.page = 1;
+  syncSortControl();
+  writeCatalogState();
+  fetchCatalog();
+}
+
+function setPage(page) {
+  const next = Math.min(state.totalPages, Math.max(1, page));
+  if (next === state.page) return;
+  state.page = next;
+  writeCatalogState();
+  fetchCatalog().then(() => {
+    $('#catalog')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 }
 
 function cardHTML(p) {
   const meta = [displayStrength(p), displayFlavor(p)].filter(Boolean).join(' · ');
-  const catLabel = CATEGORIES.find((c) => c.slug === p.category)?.label || p.category;
+  const variant = defaultVariant(p);
+  const canAdd = Boolean(p.available && variant && variant.stock > 0);
   return `
-    <article class="card" data-id="${esc(p.id)}" tabindex="0" role="button"
+    <article class="card${canAdd ? '' : ' card--unavailable'}" data-id="${esc(p.id)}" tabindex="0" role="button"
              aria-label="Quick view: ${esc(p.name)}">
       <div class="card__art">${productArt(p)}</div>
       <div class="card__body">
         <span class="micro-label card__cat">
-          <svg aria-hidden="true"><use href="#cat-${esc(p.category)}"></use></svg>${esc(catLabel)}
+          <svg aria-hidden="true"><use href="#${esc(categoryIcon(p.category))}"></use></svg>${esc(categoryLabel(p.category))}
         </span>
         <h3 class="card__title">${esc(p.name)}</h3>
         ${meta ? `<p class="card__meta">${esc(meta)}</p>` : ''}
         <div class="card__foot">
           <span class="card__price">${money(p.price)}</span>
           <button class="btn btn--accent btn--sm js-add" data-id="${esc(p.id)}"
-                  aria-label="Add ${esc(p.name)} to cart">+ Add to Cart</button>
+                  aria-label="${canAdd ? `Add ${esc(p.name)} to cart` : `${esc(p.name)} is out of stock`}"
+                  ${canAdd ? '' : 'disabled'}>${canAdd ? '+ Add to Cart' : 'Out of Stock'}</button>
         </div>
       </div>
     </article>`;
@@ -370,33 +670,86 @@ function renderSkeletons() {
 }
 
 function renderCatalog() {
-  if (!state.products.length) return; // still loading (or failed)
-  const filtered = state.products.filter(
-    (p) => (state.activeCategory === 'all' || p.category === state.activeCategory) &&
-           matchesQuery(p, state.query)
-  );
-  const n = filtered.length;
-  countEl.textContent = `/// ${n} product${n === 1 ? '' : 's'}`;
-  gridEl.innerHTML = filtered.map(cardHTML).join('');
+  const n = state.products.length;
+  countEl.textContent = `/// ${state.total} product${state.total === 1 ? '' : 's'}`;
+  gridEl.innerHTML = state.products.map(cardHTML).join('');
   gridEl.hidden = n === 0;
   emptyEl.hidden = n > 0;
 }
 
 function showCatalogError() {
   gridEl.hidden = true;
+  emptyEl.hidden = true;
   countEl.textContent = '';
   errorEl.hidden = false;
 }
 
+function syncSortControl() {
+  if (!sortControlEl) return;
+  $$('[data-sort]', sortControlEl).forEach((btn) => {
+    const active = btn.dataset.sort === state.sort;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
+}
+
+function renderPagination() {
+  if (!paginationEl) return;
+
+  if (state.totalPages <= 1) {
+    paginationEl.hidden = true;
+    paginationEl.innerHTML = '';
+    return;
+  }
+
+  paginationEl.hidden = false;
+  paginationEl.innerHTML = `
+    <button class="btn btn--ghost btn--sm" data-page="${state.page - 1}"
+            ${state.page <= 1 ? 'disabled' : ''}>← Prev</button>
+    <span class="micro-label">Page ${state.page} of ${state.totalPages}</span>
+    <button class="btn btn--ghost btn--sm" data-page="${state.page + 1}"
+            ${state.page >= state.totalPages ? 'disabled' : ''}>Next →</button>`;
+}
+
+/** Adopt a server page and repaint everything that depends on it. */
+function applyCatalog(data) {
+  state.products = data.products.map(normalizeProduct);
+  state.categories = (data.categories || []).map(normalizeCategory);
+  state.total = Number(data.total) || 0;
+  state.page = Math.max(1, Number(data.page) || 1);
+  state.pageSize = Number(data.pageSize) || 24;
+  state.totalPages = Math.max(1, Number(data.totalPages) || 1);
+
+  buildChips();
+  buildNav();
+  syncSortControl();
+  renderCatalog();
+  renderPagination();
+  writeCatalogState(); // the server may have clamped the page
+}
+
+let catalogLoaded = false;
+let catalogRequest = 0;
+
 async function fetchCatalog() {
+  const requestId = ++catalogRequest;
+
   errorEl.hidden = true;
-  renderSkeletons();
+  if (!catalogLoaded) renderSkeletons(); // only the first load flashes skeletons
+  gridEl.classList.add('is-loading');
+
   try {
-    state.products = await loadProducts();
-    renderCatalog();
+    const data = await loadCatalog();
+    if (requestId !== catalogRequest) return; // a newer request already won
+
+    applyCatalog(data);
+    catalogLoaded = true;
   } catch (err) {
+    if (requestId !== catalogRequest) return;
     console.error('Catalog load failed:', err);
     showCatalogError();
+  } finally {
+    if (requestId === catalogRequest) gridEl.classList.remove('is-loading');
   }
 }
 
@@ -407,7 +760,14 @@ gridEl.addEventListener('click', (e) => {
     e.stopPropagation();
     const p = byId(addBtn.dataset.id);
     if (!p) return;
-    store.addToCart(p, { strength: displayStrength(p), flavor: displayFlavor(p) });
+    const variant = defaultVariant(p);
+    if (!variant || variant.stock <= 0) return;
+    store.addToCart(p, {
+      strength: variant.strength,
+      flavor: variant.flavor,
+      variantId: variant.id,
+      unitPrice: variant.price,
+    });
     toast(`Added — ${p.name}`);
     announce(`Added ${p.name} to cart. ${cartCount()} item${cartCount() === 1 ? '' : 's'} in cart.`);
     return;
@@ -433,8 +793,31 @@ navEl.addEventListener('click', (e) => {
   if (link) setCategory(link.dataset.cat);
 });
 
-searchInput.addEventListener('input', () => setQuery(searchInput.value.trim()));
-searchInputM.addEventListener('input', () => setQuery(searchInputM.value.trim()));
+searchInput.addEventListener('input', () => setQuery(searchInput.value));
+searchInputM.addEventListener('input', () => setQuery(searchInputM.value));
+
+if (sortControlEl) {
+  sortControlEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-sort]');
+    if (btn) setSort(btn.dataset.sort);
+  });
+}
+
+if (paginationEl) {
+  paginationEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-page]');
+    if (btn && !btn.disabled) setPage(Number(btn.dataset.page));
+  });
+}
+
+/* Back/forward buttons should restore the view the URL describes. */
+window.addEventListener('popstate', () => {
+  readCatalogState();
+  buildChips();
+  buildNav();
+  syncSortControl();
+  fetchCatalog();
+});
 
 $('#search-toggle').addEventListener('click', () => {
   const field = $('#mobile-search');
@@ -445,8 +828,15 @@ $('#search-toggle').addEventListener('click', () => {
 });
 
 $('#clear-filters').addEventListener('click', () => {
-  setCategory('all');
-  setQuery('');
+  state.activeCategory = 'all';
+  state.query = '';
+  state.page = 1;
+  if (searchInput.value !== '') searchInput.value = '';
+  if (searchInputM.value !== '') searchInputM.value = '';
+  buildChips();
+  buildNav();
+  writeCatalogState();
+  fetchCatalog();
 });
 
 $('#retry-load').addEventListener('click', fetchCatalog);
@@ -461,15 +851,43 @@ const qvLayer = createLayer(qvEl, {
 function openQuickView(id, originEl) {
   const p = byId(id);
   if (!p) return;
+  const variant = defaultVariant(p);
   state.qv = {
     id,
-    strength: displayStrength(p),
-    flavor: displayFlavor(p),
+    strength: variant ? variant.strength : displayStrength(p),
+    flavor: variant ? variant.flavor : displayFlavor(p),
     qty: 1,
     originEl: originEl || null,
   };
   renderQuickView();
   qvLayer.open();
+}
+
+/**
+ * Keep the quick-view selection pointing at a real variant. If the chosen
+ * strength/flavor pair no longer exists (or is sold out), fall back to one
+ * that does.
+ */
+function ensureVariant(p, s) {
+  const current = variantFor(p, s.strength, s.flavor);
+  if (current) return current;
+
+  const inStock = p.variants.filter((v) => v.stock > 0);
+  const pick = inStock.find((v) => v.strength === s.strength) || inStock[0] || p.variants[0] || null;
+  if (pick) {
+    s.strength = pick.strength;
+    s.flavor = pick.flavor;
+  }
+  return pick;
+}
+
+function pillHTML(name, value, selected, disabled) {
+  return `
+    <label class="pill${disabled ? ' pill--disabled' : ''}">
+      <input type="radio" name="${name}" value="${esc(value)}"
+             ${selected ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+      <span>${esc(value)}</span>
+    </label>`;
 }
 
 function renderQuickView() {
@@ -478,16 +896,25 @@ function renderQuickView() {
   const p = byId(s.id);
   if (!p) return;
 
+  const variant = ensureVariant(p, s);
+  const inStock = Boolean(variant && variant.stock > 0);
+  const maxQty = Math.max(1, Math.min(QTY_MAX, variant ? variant.stock : 1));
+  s.qty = Math.min(s.qty, maxQty);
+
+  // A pill is available only if its pair with the other selection is in stock.
+  const strengthAvailable = (value) => p.variants.some(
+    (v) => v.strength === value && v.flavor === s.flavor && v.stock > 0
+  );
+  const flavorAvailable = (value) => p.variants.some(
+    (v) => v.flavor === value && v.strength === s.strength && v.stock > 0
+  );
+
   // Selectors appear only when a product offers multiple options
   const strengthSel = p.strengths.length > 1 ? `
     <fieldset class="selector">
       <legend class="selector__legend">Nicotine strength</legend>
       <div class="selector__pills">
-        ${p.strengths.map((v, i) => `
-          <label class="pill">
-            <input type="radio" name="qv-strength" value="${esc(v)}" ${i === 0 ? 'checked' : ''}>
-            <span>${esc(v)}</span>
-          </label>`).join('')}
+        ${p.strengths.map((v) => pillHTML('qv-strength', v, v === s.strength, !strengthAvailable(v))).join('')}
       </div>
     </fieldset>` : '';
 
@@ -495,15 +922,18 @@ function renderQuickView() {
     <fieldset class="selector">
       <legend class="selector__legend">Flavor</legend>
       <div class="selector__pills">
-        ${p.flavors.map((v, i) => `
-          <label class="pill">
-            <input type="radio" name="qv-flavor" value="${esc(v)}" ${i === 0 ? 'checked' : ''}>
-            <span>${esc(v)}</span>
-          </label>`).join('')}
+        ${p.flavors.map((v) => pillHTML('qv-flavor', v, v === s.flavor, !flavorAvailable(v))).join('')}
       </div>
     </fieldset>` : '';
 
   const variantLine = [s.strength, s.flavor].filter(Boolean).join(' · ');
+
+  const stockLabel = !inStock
+    ? 'Out of stock'
+    : variant.stock <= 5
+      ? `Only ${variant.stock} left in stock`
+      : `In stock (${variant.stock})`;
+  const stockClass = !inStock ? ' is-out' : variant.stock <= 5 ? ' is-low' : '';
 
   qvEl.innerHTML = `
     <div class="layer-backdrop" data-close-qv></div>
@@ -514,24 +944,30 @@ function renderQuickView() {
       <div class="qv">
         <div class="qv__art">${productArt(p)}</div>
         <div class="qv__body">
-          <span class="micro-label">${esc(CATEGORIES.find((c) => c.slug === p.category)?.label || p.category)}</span>
+          <span class="micro-label">
+            <svg aria-hidden="true"><use href="#${esc(categoryIcon(p.category))}"></use></svg>
+            ${esc(categoryLabel(p.category))}
+          </span>
           <h2 class="qv__title" id="qv-title">${esc(p.name)}</h2>
           <p class="qv__desc">${esc(p.description)}</p>
           ${variantLine ? `<p class="micro-label">${esc(variantLine)}</p>` : ''}
           ${strengthSel}
           ${flavorSel}
-          <p class="qv__price">${money(p.price)}</p>
+          <p class="qv__price">${money(variant ? variant.price : p.price)}</p>
+          <p class="qv__stock${stockClass}">${stockLabel}</p>
           <div class="qv__actions">
             <div class="stepper" aria-label="Quantity">
               <button class="icon-btn" data-qv-dec aria-label="Decrease quantity"${s.qty <= 1 ? ' disabled' : ''}>
                 <svg aria-hidden="true"><use href="#icon-minus"></use></svg>
               </button>
               <span class="stepper__qty" aria-live="polite">${s.qty}</span>
-              <button class="icon-btn" data-qv-inc aria-label="Increase quantity"${s.qty >= QTY_MAX ? ' disabled' : ''}>
+              <button class="icon-btn" data-qv-inc aria-label="Increase quantity"${s.qty >= maxQty ? ' disabled' : ''}>
                 <svg aria-hidden="true"><use href="#icon-plus"></use></svg>
               </button>
             </div>
-            <button class="btn btn--accent" data-qv-add>Add to Cart</button>
+            <button class="btn btn--accent" data-qv-add ${inStock ? '' : 'disabled'}>
+              ${inStock ? 'Add to Cart' : 'Out of Stock'}
+            </button>
           </div>
         </div>
       </div>
@@ -547,7 +983,15 @@ qvEl.addEventListener('click', (e) => {
   if (e.target.closest('[data-qv-add]')) {
     const p = byId(s.id);
     if (!p) return;
-    store.addToCart(p, { strength: s.strength, flavor: s.flavor, qty: s.qty });
+    const variant = ensureVariant(p, s);
+    if (!variant || variant.stock <= 0) return;
+    store.addToCart(p, {
+      strength: s.strength,
+      flavor: s.flavor,
+      qty: s.qty,
+      variantId: variant.id,
+      unitPrice: variant.price,
+    });
     toast(`Added — ${p.name}`);
     announce(`Added ${p.name} to cart. ${cartCount()} item${cartCount() === 1 ? '' : 's'} in cart.`);
     qvLayer.close();
@@ -557,8 +1001,18 @@ qvEl.addEventListener('click', (e) => {
 qvEl.addEventListener('change', (e) => {
   const s = state.qv;
   if (!s) return;
-  if (e.target.name === 'qv-strength') s.strength = e.target.value;
-  if (e.target.name === 'qv-flavor') s.flavor = e.target.value;
+  if (e.target.name !== 'qv-strength' && e.target.name !== 'qv-flavor') return;
+
+  const name = e.target.name;
+  const value = e.target.value;
+  if (name === 'qv-strength') s.strength = value;
+  else s.flavor = value;
+
+  renderQuickView(); // repaint price, stock and pill availability
+
+  // Re-rendering replaces the radio, so put focus back on the chosen pill.
+  const next = $$(`input[name="${name}"]`, qvEl).find((input) => input.value === value && !input.disabled);
+  next?.focus();
 });
 
 /* ---------- 8. Cart drawer ---------- */
@@ -572,18 +1026,22 @@ function cartLineHTML(line, { interactive = true } = {}) {
   const thumb = line.image
     ? `<img src="${esc(line.image)}" alt="">`
     : '<svg aria-hidden="true"><use href="#ph-art"></use></svg>';
+  const stockChip = !line.inStock || (line.stock !== undefined && line.stock < line.qty)
+    ? '<span class="cart-line__stock">Out of stock</span>'
+    : '';
+  const key = line.variantId ? `v:${line.variantId}` : line.key;
   const controls = interactive ? `
     <div class="cart-line__controls">
       <div class="stepper" aria-label="Quantity for ${esc(line.name)}">
-        <button class="icon-btn" data-action="dec" data-key="${esc(line.key)}" aria-label="Decrease quantity"${line.qty <= 1 ? ' disabled' : ''}>
+        <button class="icon-btn" data-action="dec" data-key="${esc(key)}" aria-label="Decrease quantity"${line.qty <= 1 || (!line.inStock) ? ' disabled' : ''}>
           <svg aria-hidden="true"><use href="#icon-minus"></use></svg>
         </button>
         <span class="stepper__qty">${line.qty}</span>
-        <button class="icon-btn" data-action="inc" data-key="${esc(line.key)}" aria-label="Increase quantity"${line.qty >= QTY_MAX ? ' disabled' : ''}>
+        <button class="icon-btn" data-action="inc" data-key="${esc(key)}" aria-label="Increase quantity"${line.qty >= QTY_MAX || (!line.inStock) ? ' disabled' : ''}>
           <svg aria-hidden="true"><use href="#icon-plus"></use></svg>
         </button>
       </div>
-      <button class="icon-btn icon-btn--danger" data-action="remove" data-key="${esc(line.key)}" aria-label="Remove ${esc(line.name)} from cart">
+      <button class="icon-btn icon-btn--danger" data-action="remove" data-key="${esc(key)}" aria-label="Remove ${esc(line.name)} from cart">
         <svg aria-hidden="true"><use href="#icon-trash"></use></svg>
       </button>
     </div>` : '';
@@ -594,6 +1052,7 @@ function cartLineHTML(line, { interactive = true } = {}) {
         <span class="cart-line__name">${esc(line.name)}</span>
         ${variant ? `<span class="cart-line__variant">${esc(variant)}</span>` : ''}
         <span class="cart-line__unit">${money(line.price)} each</span>
+        ${stockChip}
         ${controls}
       </div>
       <div class="cart-line__side">
@@ -602,10 +1061,13 @@ function cartLineHTML(line, { interactive = true } = {}) {
     </div>`;
 }
 
-/** Free-shipping progress bar — shared by drawer and checkout step 1. */
+/** Free-shipping progress bar — uses the server's totals when available. */
 function shipProgressHTML(totals) {
-  const remaining = Math.max(0, FREE_SHIPPING_ABOVE - totals.subtotal);
-  const pct = Math.min(100, Math.round((totals.subtotal / FREE_SHIPPING_ABOVE) * 100));
+  const t = totals || state.cartTotals || {};
+  const subtotal = Number(t.subtotal ?? state.cart.reduce((sum, l) => sum + l.price * l.qty, 0));
+  const threshold = Number(t.freeShippingAbove ?? FREE_SHIPPING_ABOVE);
+  const remaining = Math.max(0, threshold - subtotal);
+  const pct = threshold > 0 ? Math.min(100, Math.round((subtotal / threshold) * 100)) : 100;
   const label = remaining > 0
     ? `You're <strong>${money(remaining)}</strong> from free shipping`
     : '<strong>Free shipping unlocked</strong>';
@@ -619,15 +1081,26 @@ function shipProgressHTML(totals) {
     </div>`;
 }
 
-/** Totals block — one implementation, reused everywhere money is shown. */
+/** Totals block — uses the server totals object. */
+function totalsFromLines(cart = state.cart) {
+  const subtotal = cart.reduce((sum, l) => sum + l.price * l.qty, 0);
+  const vat = Math.round(subtotal * VAT_RATE * 100) / 100;
+  const shipping = subtotal > 0 && subtotal < FREE_SHIPPING_ABOVE ? FLAT_SHIPPING : 0;
+  return { subtotal, vat, shipping, total: subtotal + vat + shipping };
+}
+
 function totalsHTML(cart) {
-  const t = computeTotals(cart);
+  const t = state.cartTotals || totalsFromLines(cart);
+  const subtotal = Number(t.subtotal ?? cart.reduce((sum, l) => sum + l.price * l.qty, 0));
+  const vat = Number(t.vat ?? (Math.round(subtotal * VAT_RATE * 100) / 100));
+  const shipping = Number(t.shipping ?? t.shippingFee ?? (subtotal > 0 && subtotal < FREE_SHIPPING_ABOVE ? FLAT_SHIPPING : 0));
+  const total = Number(t.total ?? (subtotal + vat + shipping));
   return `
     <div class="totals">
-      <div class="totals__row"><span>Subtotal</span><span>${money(t.subtotal)}</span></div>
-      <div class="totals__row"><span>VAT (12%)</span><span>${money(t.vat)}</span></div>
-      <div class="totals__row"><span>Shipping</span><span>${t.shipping === 0 ? 'FREE' : money(t.shipping)}</span></div>
-      <div class="totals__row totals__row--grand"><span>Total</span><span>${money(t.total)}</span></div>
+      <div class="totals__row"><span>Subtotal</span><span>${money(subtotal)}</span></div>
+      <div class="totals__row"><span>VAT (12%)</span><span>${money(vat)}</span></div>
+      <div class="totals__row"><span>Shipping</span><span>${shipping === 0 ? 'FREE' : money(shipping)}</span></div>
+      <div class="totals__row totals__row--grand"><span>Total</span><span>${money(total)}</span></div>
     </div>`;
 }
 
@@ -658,7 +1131,7 @@ function renderDrawer() {
       </header>
       <div class="drawer__body">${lines}</div>
       <footer class="drawer__foot">
-        ${shipProgressHTML(computeTotals(state.cart))}
+        ${shipProgressHTML(state.cartTotals)}
         ${totalsHTML(state.cart)}
         <button class="btn btn--accent btn--block" id="drawer-checkout"${state.cart.length ? '' : ' disabled'}>Checkout</button>
       </footer>
@@ -675,11 +1148,11 @@ drawerEl.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
   const { action, key } = btn.dataset;
+  if (!key) return;
+  const line = state.cart.find((l) => (l.variantId ? `v:${l.variantId}` : l.key) === key);
   if (action === 'inc') {
-    const line = state.cart.find((l) => l.key === key);
     if (line) store.setQty(key, line.qty + 1);
   } else if (action === 'dec') {
-    const line = state.cart.find((l) => l.key === key);
     if (line) store.setQty(key, line.qty - 1);
   } else if (action === 'remove') {
     store.removeFromCart(key);
@@ -739,14 +1212,20 @@ function updateStepIndicator() {
 
 function openCheckout() {
   if (!state.cart.length) { toast('Your cart is empty.'); return; }
+  if (!window.__APP__?.user) {
+    drawerLayer.close();
+    const next = encodeURIComponent('index.php#checkout');
+    window.location.href = `login.php?next=${next}`;
+    return;
+  }
   drawerLayer.close();
   state.checkout.step = 1;
   state.checkout.order = null;
   checkoutOpen = true;
   document.body.classList.add('checkout-open');
-  cartBtn.disabled = true;
-  stepIndicatorEl.hidden = false;
-  checkoutEl.hidden = false;
+  if (cartBtn) cartBtn.disabled = true;
+  if (stepIndicatorEl) stepIndicatorEl.hidden = false;
+  if (checkoutEl) checkoutEl.hidden = false;
   lockLayer(checkoutEl);
   renderCheckout();
   requestAnimationFrame(() => checkoutEl.classList.add('is-open'));
@@ -755,13 +1234,12 @@ function openCheckout() {
 function closeCheckout({ reset = false } = {}) {
   if (!checkoutOpen) return;
   checkoutOpen = false;
-  checkoutEl.classList.remove('is-open');
-  setTimeout(() => { checkoutEl.hidden = true; }, 320);
+  if (checkoutEl) checkoutEl.classList.remove('is-open');
+  setTimeout(() => { if (checkoutEl) checkoutEl.hidden = true; }, 320);
   document.body.classList.remove('checkout-open');
-  cartBtn.disabled = false;
-  stepIndicatorEl.hidden = true;
+  if (cartBtn) { cartBtn.disabled = false; cartBtn.focus(); }
+  if (stepIndicatorEl) stepIndicatorEl.hidden = true;
   unlockLayer(checkoutEl);
-  cartBtn.focus();
   if (reset) {
     // Order placed (or explicitly abandoned): back to a clean slate
     state.checkout = { step: 1, shipping: { ...EMPTY_SHIPPING }, payment: '', submitting: false, order: null };
@@ -797,7 +1275,7 @@ function renderCheckout() {
     body = `
       <div class="checkout__panel">
         ${state.cart.map((l) => cartLineHTML(l)).join('')}
-        ${shipProgressHTML(computeTotals(state.cart))}
+        ${shipProgressHTML(state.cartTotals)}
         ${totalsHTML(state.cart)}
       </div>`;
     foot = `
@@ -909,71 +1387,76 @@ function renderCheckout() {
 }
 
 /* Checkout events (delegated — the panel re-renders per step) */
-checkoutEl.addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-co]');
-  if (btn) {
-    const cmd = btn.dataset.co;
-    const c = state.checkout;
-    if (cmd === 'back') {
-      if (c.step === 1) closeCheckout();
-      else { c.step -= 1; renderCheckout(); }
-      return;
-    }
-    if (cmd === 'next') {
-      if (c.step === 2) {
-        const errs = validateShippingAll();
-        ['name', 'phone', 'address'].forEach((f, i) => setFieldError(f, errs[i]));
-        const firstBad = ['name', 'phone', 'address'].find((f, i) => errs[i]);
-        if (firstBad) { $(`[data-field="${firstBad}"] input`, checkoutEl)?.focus(); return; }
+if (checkoutEl) {
+  checkoutEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-co]');
+    if (btn) {
+      const cmd = btn.dataset.co;
+      const c = state.checkout;
+      if (cmd === 'back') {
+        if (c.step === 1) closeCheckout();
+        else { c.step -= 1; renderCheckout(); }
+        return;
       }
-      c.step += 1;
-      renderCheckout();
-      return;
+      if (cmd === 'next') {
+        if (c.step === 2) {
+          const errs = validateShippingAll();
+          ['name', 'phone', 'address'].forEach((f, i) => setFieldError(f, errs[i]));
+          const firstBad = ['name', 'phone', 'address'].find((f, i) => errs[i]);
+          if (firstBad) { $(`[data-field="${firstBad}"] input`, checkoutEl)?.focus(); return; }
+        }
+        c.step += 1;
+        renderCheckout();
+        return;
+      }
+      if (cmd === 'place') { placeOrder(btn); return; }
+      if (cmd === 'done') { closeCheckout({ reset: true }); window.location.href = 'account/orders.php'; return; }
     }
-    if (cmd === 'place') { placeOrder(btn); return; }
-    if (cmd === 'done') { closeCheckout({ reset: true }); return; }
-  }
 
-  // Step-1 qty steppers share the drawer's data-action handlers
-  const lineBtn = e.target.closest('[data-action]');
-  if (lineBtn) {
-    const { action, key } = lineBtn.dataset;
-    const line = state.cart.find((l) => l.key === key);
-    if (!line) return;
-    if (action === 'inc') store.setQty(key, line.qty + 1);
-    if (action === 'dec') store.setQty(key, line.qty - 1);
-    if (action === 'remove') store.removeFromCart(key);
-  }
-});
+    // Step-1 qty steppers share the drawer's data-action handlers
+    const lineBtn = e.target.closest('[data-action]');
+    if (lineBtn) {
+      const { action, key } = lineBtn.dataset;
+      if (!key) return;
+      const line = state.cart.find((l) => (l.variantId ? `v:${l.variantId}` : l.key) === key);
+      if (!line) return;
+      if (action === 'inc') store.setQty(key, line.qty + 1);
+      if (action === 'dec') store.setQty(key, line.qty - 1);
+      if (action === 'remove') store.removeFromCart(key);
+    }
+  });
+}
 
 /* Step 2: draft persistence + validation on blur */
-checkoutEl.addEventListener('input', (e) => {
-  const field = e.target.name;
-  if (['name', 'phone', 'address', 'notes'].includes(field)) {
-    state.checkout.shipping[field] = e.target.value;
-    saveDraft();
-  }
-});
+if (checkoutEl) {
+  checkoutEl.addEventListener('input', (e) => {
+    const field = e.target.name;
+    if (['name', 'phone', 'address', 'notes'].includes(field)) {
+      state.checkout.shipping[field] = e.target.value;
+      saveDraft();
+    }
+  });
 
-checkoutEl.addEventListener('change', (e) => {
-  if (e.target.name === 'payment') {
-    state.checkout.payment = e.target.value;
-    $('#pay-error', checkoutEl).hidden = true;
-    $$('.pay-card', checkoutEl).forEach((card) => {
-      card.classList.toggle('is-selected', $('input', card).value === state.checkout.payment);
-    });
-  }
-});
+  checkoutEl.addEventListener('change', (e) => {
+    if (e.target.name === 'payment') {
+      state.checkout.payment = e.target.value;
+      const err = $('#pay-error', checkoutEl);
+      if (err) err.hidden = true;
+      $$('.pay-card', checkoutEl).forEach((card) => {
+        card.classList.toggle('is-selected', $('input', card).value === state.checkout.payment);
+      });
+    }
+  });
 
-checkoutEl.addEventListener('focusout', (e) => {
-  const wrap = e.target.closest?.('[data-field]');
-  if (!wrap) return;
-  const field = wrap.dataset.field;
-  if (!['name', 'phone', 'address'].includes(field)) return;
-  setFieldError(field, validateField(field, e.target.value));
-});
+  checkoutEl.addEventListener('focusout', (e) => {
+    const wrap = e.target.closest?.('[data-field]');
+    if (!wrap) return;
+    const field = wrap.dataset.field;
+    if (!['name', 'phone', 'address'].includes(field)) return;
+    setFieldError(field, validateField(field, e.target.value));
+  });
+}
 
-/* Simulated submission → receipt */
 function makeRef() {
   const d = new Date();
   const yy = String(d.getFullYear()).slice(-2);
@@ -988,8 +1471,14 @@ function shortName(full) {
   return `${parts[0]} ${parts[parts.length - 1][0]}.`;
 }
 
-function placeOrder(btn) {
+async function placeOrder(btn) {
   const c = state.checkout;
+  if (!window.__APP__?.user) {
+    toast('Please sign in to check out.');
+    closeCheckout();
+    window.location.href = `login.php?next=${encodeURIComponent('index.php#checkout')}`;
+    return;
+  }
   if (!c.payment) {
     const err = $('#pay-error', checkoutEl);
     if (err) err.hidden = false;
@@ -1000,40 +1489,68 @@ function placeOrder(btn) {
   btn.disabled = true;
   c.submitting = true;
 
-  setTimeout(() => {
-    // Final full validation before "submitting"
-    const errs = validateShippingAll();
-    if (errs.some(Boolean) || !state.cart.length || !c.payment) {
-      c.submitting = false;
-      if (errs.some(Boolean)) {
-        c.step = 2;
-        renderCheckout();
-        ['name', 'phone', 'address'].forEach((f, i) => setFieldError(f, errs[i]));
-        const firstBad = ['name', 'phone', 'address'].find((f, i) => errs[i]);
-        $(`[data-field="${firstBad}"] input`, checkoutEl)?.focus();
-        return;
-      }
+  // Final full validation before submitting
+  const errs = validateShippingAll();
+  if (errs.some(Boolean) || !state.cart.length || !c.payment) {
+    c.submitting = false;
+    btn.disabled = false;
+    btn.classList.remove('is-loading');
+    if (errs.some(Boolean)) {
+      c.step = 2;
       renderCheckout();
+      ['name', 'phone', 'address'].forEach((f, i) => setFieldError(f, errs[i]));
+      const firstBad = ['name', 'phone', 'address'].find((f, i) => errs[i]);
+      $(`[data-field="${firstBad}"] input`, checkoutEl)?.focus();
       return;
     }
-    const method = PAYMENT_METHODS.find((m) => m.id === c.payment);
+    renderCheckout();
+    return;
+  }
+
+  const method = PAYMENT_METHODS.find((m) => m.id === c.payment);
+  const paymentMap = { card: 'CARD', gcash: 'GCASH', cod: 'COD' };
+
+  try {
+    const data = await API.post('checkout.php', {
+      shipping: {
+        name: c.shipping.name,
+        phone: c.shipping.phone,
+        address: c.shipping.address,
+        notes: c.shipping.notes || '',
+      },
+      paymentMethod: paymentMap[c.payment] || 'COD',
+    });
+
     c.order = {
-      ref: makeRef(),
+      ref: data.orderNumber || makeRef(),
       dateLabel: new Date().toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }),
       recipient: shortName(c.shipping.name),
       paymentLabel: method ? method.label : c.payment,
       lines: state.cart.map((l) => ({ ...l })),
-      totals: computeTotals(state.cart),
+      totals: state.cartTotals || totalsFromLines(),
     };
-    store.clearCart();        // clears cart_v1 + re-renders badge to 0
-    storage.remove(DRAFT_KEY); // and forgets the shipping draft
+
+    state.cart = [];
+    state.cartTotals = null;
+    state.cartCount = 0;
+    renderAll();
+    storage.remove(DRAFT_KEY);
     c.shipping = { ...EMPTY_SHIPPING };
     c.payment = '';
     c.submitting = false;
     c.step = 4;
+    btn.disabled = false;
+    btn.classList.remove('is-loading');
     renderCheckout();
     announce(`Order confirmed. Reference ${c.order.ref}.`);
-  }, 800);
+  } catch (err) {
+    console.error('Checkout failed:', err);
+    toast(err.message || 'Could not place order. Please try again.');
+    c.submitting = false;
+    btn.disabled = false;
+    btn.classList.remove('is-loading');
+    renderCheckout();
+  }
 }
 
 /* ---------- 10. Toast, live region, render orchestration, init ---------- */
@@ -1067,6 +1584,7 @@ let prevCount = 0;
 function renderBadge() {
   const count = cartCount();
   const badge = $('#cart-badge');
+  if (!badge) return;
   badge.hidden = count === 0;
   badge.textContent = count;
   if (count > prevCount) {
@@ -1074,7 +1592,7 @@ function renderBadge() {
     void badge.offsetWidth; // restart the animation
     badge.classList.add('pop');
   }
-  cartBtn.setAttribute('aria-label', count ? `Open cart, ${count} item${count === 1 ? '' : 's'}` : 'Open cart');
+  if (cartBtn) cartBtn.setAttribute('aria-label', count ? `Open cart, ${count} item${count === 1 ? '' : 's'}` : 'Open cart');
   prevCount = count;
 }
 
@@ -1086,16 +1604,70 @@ function renderAll() {
 }
 
 /* Wordmark returns to the catalog */
-$('#wordmark').addEventListener('click', (e) => {
-  e.preventDefault();
-  if (checkoutOpen) closeCheckout();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-});
+const wordmark = $('#wordmark');
+if (wordmark) {
+  wordmark.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (checkoutOpen) closeCheckout();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+}
+
+/* Header account menu */
+function initHeaderAccount() {
+  const guest = document.getElementById('header-account-guest');
+  const userWrap = document.getElementById('header-account-user');
+  const trigger = document.getElementById('header-account-trigger');
+  const nameEl = document.getElementById('header-account-name');
+  const menu = document.getElementById('header-account-menu');
+  const user = window.__APP__?.user;
+
+  if (!guest || !userWrap || !trigger || !nameEl || !menu) return;
+
+  if (user) {
+    guest.hidden = true;
+    userWrap.hidden = false;
+    nameEl.textContent = user.firstName + ' ' + user.lastName;
+  } else {
+    guest.hidden = false;
+    userWrap.hidden = true;
+  }
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = !menu.hidden;
+    if (open) {
+      menu.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+    } else {
+      menu.hidden = false;
+      trigger.setAttribute('aria-expanded', 'true');
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!userWrap.contains(e.target)) {
+      menu.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      menu.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+      trigger.focus();
+    }
+  });
+}
 
 /* Init */
-store.load();
 initAgeGate();
+readCatalogState();
 buildChips();
 buildNav();
+syncSortControl();
 renderBadge();
+initHeaderAccount();
 fetchCatalog();
+store.load();
