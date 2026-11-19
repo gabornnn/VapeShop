@@ -23,7 +23,10 @@ define('DB_PASS', '');
 define('APP_NAME', 'VAPE CO.');
 define('APP_TAGLINE', 'Premium Vape Shop');
 
-/* Tax rate applied to the subtotal. */
+/*
+ * Prices are VAT-inclusive. This rate is only used to disclose the VAT already
+ * contained in a price; it is never added to the cart or order total.
+ */
 define('VAT_RATE', 0.12);
 
 /* Flat courier fee, waived above the free-shipping threshold. */
@@ -32,6 +35,15 @@ define('FREE_SHIPPING_ABOVE', 2000.00);
 
 /* Age gate: minimum age to register, log in, or buy. */
 define('MIN_AGE', 21);
+
+/* Terms of agreement version stored with each acceptance. */
+define('TERMS_VERSION', '2026-11-16');
+
+/*
+ * Open staff registration is for initial setup only.
+ * Set this to false after the first admin account exists.
+ */
+define('ALLOW_OPEN_ADMIN_REGISTRATION', true);
 
 /* Maximum quantity of one line in the cart. */
 define('MAX_QTY', 10);

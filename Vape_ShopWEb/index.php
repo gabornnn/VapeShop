@@ -112,6 +112,9 @@ require_once __DIR__ . '/includes/head.php';
       <span class="wordmark wordmark--sm">VAPE<span class="wordmark__accent">CO.</span></span>
       <p>Frontend demo — no real products are sold and no payments are processed.</p>
       <p class="site-footer__age">Adults 21+ only.</p>
+      <p class="site-footer__legal">
+        <a href="terms.php">Terms &amp; Policy</a>
+      </p>
     </footer>
 
   </div><!-- /#page -->

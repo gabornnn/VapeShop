@@ -62,12 +62,12 @@ $__base  = asset_base();         // e.g. "" or "../"
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
   <!-- Product placeholder art (used when a product has no image URL) -->
   <symbol id="ph-art" viewBox="0 0 120 120">
-    <rect width="120" height="120" fill="#0b0e13"/>
-    <circle cx="60" cy="52" r="26" fill="none" stroke="#00f0ff" stroke-width="1.5" opacity=".45"/>
-    <circle cx="60" cy="52" r="17" fill="none" stroke="#00f0ff" stroke-width="1.5" opacity=".8"/>
-    <path d="M52 76h16l-3 22a5 5 0 0 1-5 4h-0a5 5 0 0 1-5-4z" fill="none" stroke="#c6ff00" stroke-width="1.5" opacity=".7"/>
-    <path d="M55 68h10" stroke="#c6ff00" stroke-width="1.5" opacity=".7"/>
-    <path d="M60 30v-8M60 82v6M38 52h-8M90 52h-8" stroke="#00f0ff" stroke-width="1" opacity=".35"/>
+    <rect width="120" height="120" fill="#eef1ec"/>
+    <circle cx="60" cy="52" r="26" fill="none" stroke="#2f6f4e" stroke-width="1.5" opacity=".35"/>
+    <circle cx="60" cy="52" r="17" fill="none" stroke="#2f6f4e" stroke-width="1.5" opacity=".55"/>
+    <path d="M52 76h16l-3 22a5 5 0 0 1-5 4h-0a5 5 0 0 1-5-4z" fill="none" stroke="#8a9a8f" stroke-width="1.5" opacity=".8"/>
+    <path d="M55 68h10" stroke="#8a9a8f" stroke-width="1.5" opacity=".8"/>
+    <path d="M60 30v-8M60 82v6M38 52h-8M90 52h-8" stroke="#8a9a8f" stroke-width="1" opacity=".55"/>
   </symbol>
   <!-- UI icons -->
   <symbol id="icon-cart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">

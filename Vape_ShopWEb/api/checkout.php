@@ -14,16 +14,11 @@ if (api_method() !== 'POST') {
 
 require_api_login();
 
-$body          = api_body();
-$shipping      = is_array($body['shipping'] ?? null) ? $body['shipping'] : [];
-$paymentMethod = strtoupper(trim((string) ($body['paymentMethod'] ?? '')));
-
-if ($paymentMethod === '') {
-    $paymentMethod = 'COD';
-}
-if (!in_array($paymentMethod, ['CARD', 'GCASH', 'COD'], true)) {
-    api_fail('VALIDATION_ERROR', 'Invalid payment method.', 400);
-}
+$body         = api_body();
+$shipping     = is_array($body['shipping'] ?? null) ? $body['shipping'] : [];
+$rawPayments  = is_array($body['payments'] ?? null) ? $body['payments'] : [];
+$legacyMethod = strtoupper(trim((string) ($body['paymentMethod'] ?? '')));
+$legacyMethod = payment_method_map()[strtolower($legacyMethod)] ?? $legacyMethod;
 
 $name    = trim((string) ($shipping['name'] ?? ''));
 $phone   = trim((string) ($shipping['phone'] ?? ''));
@@ -112,10 +107,28 @@ try {
         ];
     }
 
-    $vatRate    = (float) VAT_RATE;
-    $vatAmount  = round($subtotal * $vatRate, 2);
-    $shippingFee = ($subtotal > 0 && $subtotal < (float) FREE_SHIPPING_ABOVE) ? (float) FLAT_SHIPPING : 0.00;
-    $total      = round($subtotal + $vatAmount + $shippingFee, 2);
+    $totals      = order_totals($subtotal);
+    $subtotal    = $totals['subtotal'];
+    $vatRate     = $totals['vatRate'];
+    $vatAmount   = $totals['vatIncludedAmount']; // already inside subtotal
+    $shippingFee = $totals['shipping'];
+    $total       = $totals['total'];
+
+    if (!$rawPayments && $legacyMethod !== '') {
+        $rawPayments = [[
+            'method' => $legacyMethod,
+            'amount' => $total,
+        ]];
+    }
+
+    try {
+        $payments = validate_payments($rawPayments, $total);
+    } catch (InvalidArgumentException $e) {
+        $pdo->rollBack();
+        api_fail('VALIDATION_ERROR', $e->getMessage(), 400, ['payments' => $e->getMessage()]);
+    }
+
+    $paymentMethod = count($payments) === 1 ? $payments[0]['method'] : 'SPLIT';
 
     // Create order with placeholder number.
     $ostmt = $pdo->prepare(
@@ -167,6 +180,14 @@ try {
         ]);
     }
 
+    // Payment breakdown (1 row for single, 2 rows for split).
+    $pstmt = $pdo->prepare(
+        'INSERT INTO order_payments (order_id, method, amount) VALUES (?, ?, ?)'
+    );
+    foreach ($payments as $payment) {
+        $pstmt->execute([$orderId, $payment['method'], $payment['amount']]);
+    }
+
     // Status history
     $hstmt = $pdo->prepare(
         'INSERT INTO order_status_history (order_id, from_status, to_status, changed_by, note)
@@ -192,9 +213,11 @@ try {
     $pdo->commit();
 
     api_ok([
-        'orderId'     => $orderId,
-        'orderNumber' => $ref,
-        'total'       => $total,
+        'orderId'      => $orderId,
+        'orderNumber'  => $ref,
+        'total'        => $total,
+        'payments'     => $payments,
+        'paymentLabel' => payment_summary_label($payments),
     ]);
 } catch (Throwable $e) {
     if ($pdo->inTransaction()) {

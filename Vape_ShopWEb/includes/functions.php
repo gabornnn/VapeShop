@@ -65,6 +65,45 @@ function percent($rate): string
     return rtrim(rtrim(number_format((float) $rate * 100, 2, '.', ''), '0'), '.') . '%';
 }
 
+/* ---------- Order totals (VAT-inclusive) ---------- */
+
+/**
+ * Compute the order totals from a gross (VAT-inclusive) subtotal.
+ *
+ * @return array{
+ *   subtotal: float,
+ *   vatRate: float,
+ *   vatIncluded: bool,
+ *   vatIncludedAmount: float,
+ *   shipping: float,
+ *   shippingFee: float,
+ *   freeShippingAbove: float,
+ *   amountToFreeShipping: float,
+ *   total: float
+ * }
+ */
+function order_totals(float $subtotal): array
+{
+    $subtotal = round(max(0.0, $subtotal), 2);
+    $shipping = ($subtotal > 0 && $subtotal < (float) FREE_SHIPPING_ABOVE)
+        ? (float) FLAT_SHIPPING
+        : 0.0;
+    $vatRate = (float) VAT_RATE;
+    $vatIncludedAmount = round($subtotal - ($subtotal / (1 + $vatRate)), 2);
+
+    return [
+        'subtotal'             => $subtotal,
+        'vatRate'              => $vatRate,
+        'vatIncluded'          => true,
+        'vatIncludedAmount'    => $vatIncludedAmount,
+        'shipping'             => $shipping,
+        'shippingFee'          => $shipping,
+        'freeShippingAbove'    => (float) FREE_SHIPPING_ABOVE,
+        'amountToFreeShipping' => round(max(0.0, (float) FREE_SHIPPING_ABOVE - $subtotal), 2),
+        'total'                => round($subtotal + $shipping, 2),
+    ];
+}
+
 /* ---------- Dates ---------- */
 
 /**
@@ -247,6 +286,20 @@ function get_flashes(): array
 }
 
 /**
+ * First queued flash message, or null.
+ *
+ * Compatibility wrapper for pages that expect a single message. New code
+ * should prefer get_flashes() and render every message.
+ *
+ * @return array{type: string, message: string}|null
+ */
+function get_flash(): ?array
+{
+    $flashes = get_flashes();
+    return $flashes[0] ?? null;
+}
+
+/**
  * Remember what the user typed so a failed form can be re-rendered with it.
  */
 function remember_old(array $data): void
@@ -287,18 +340,47 @@ function order_status_label(string $status): string
     ][$status] ?? ucfirst(strtolower($status));
 }
 
+/* ---------- Payments ---------- */
+
 /**
- * The payment method ids the client sends, mapped to the database ENUM.
+ * The payment methods the storefront offers.
  *
- * The mapping is explicit because MySQL 8 and MariaDB disagree about whether
- * an ENUM match is case-sensitive.
+ * @return array<string, array{label: string, icon: string, desc: string}>
+ */
+function payment_method_options(): array
+{
+    return [
+        'GCASH' => [
+            'label' => 'GCash',
+            'icon'  => 'icon-wallet',
+            'desc'  => 'Pay from your GCash wallet.',
+        ],
+        'MAYA' => [
+            'label' => 'Maya',
+            'icon'  => 'icon-wallet',
+            'desc'  => 'Pay from your Maya (PayMaya) wallet.',
+        ],
+        'CASH' => [
+            'label' => 'Cash',
+            'icon'  => 'icon-cash',
+            'desc'  => 'Pay in cash when your order arrives.',
+        ],
+    ];
+}
+
+/**
+ * Map client ids to database values. Legacy ids are kept for one release.
+ *
+ * @return array<string, string>
  */
 function payment_method_map(): array
 {
     return [
-        'card'  => 'CARD',
         'gcash' => 'GCASH',
-        'cod'   => 'COD',
+        'maya'  => 'MAYA',
+        'cash'  => 'CASH',
+        'cod'   => 'CASH',  // legacy client compatibility
+        'card'  => 'CARD',  // rejected by validate_payments()
     ];
 }
 
@@ -307,9 +389,167 @@ function payment_method_map(): array
  */
 function payment_method_label(string $method): string
 {
-    return [
-        'CARD'  => 'Credit / Debit Card',
-        'GCASH' => 'E-Wallet / GCash',
-        'COD'   => 'Cash on Delivery',
-    ][$method] ?? $method;
+    $method = strtoupper($method);
+    $labels = [
+        'GCASH' => 'GCash',
+        'MAYA'  => 'Maya',
+        'CASH'  => 'Cash',
+        'SPLIT' => 'Split payment',
+        'CARD'  => 'Card (legacy)',
+        'COD'   => 'Cash on Delivery (legacy)',
+    ];
+    return $labels[$method] ?? $method;
+}
+
+/**
+ * One-line summary for an order's payment rows.
+ *
+ * @param array<int, array{method: string, amount: float|string}> $payments
+ */
+function payment_summary_label(array $payments): string
+{
+    if (!$payments) {
+        return '—';
+    }
+    if (count($payments) === 1) {
+        return payment_method_label((string) $payments[0]['method']);
+    }
+
+    $parts = array_map(
+        static fn(array $p): string => payment_method_label((string) $p['method'])
+            . ' ' . money((float) $p['amount']),
+        $payments
+    );
+    return 'Split — ' . implode(' + ', $parts);
+}
+
+/**
+ * Validate one or two payment allocations against the server total.
+ *
+ * @param array<int, mixed> $raw
+ * @return array<int, array{method: string, amount: float}>
+ * @throws InvalidArgumentException
+ */
+function validate_payments(array $raw, float $expectedTotal): array
+{
+    $allowed = array_keys(payment_method_options());
+    if (count($raw) < 1 || count($raw) > 2) {
+        throw new InvalidArgumentException('Choose one payment method or split between two.');
+    }
+
+    $payments = [];
+    $seen = [];
+    $sum = 0.0;
+
+    foreach ($raw as $row) {
+        if (!is_array($row)) {
+            throw new InvalidArgumentException('Invalid payment entry.');
+        }
+
+        $method = strtoupper(trim((string) ($row['method'] ?? '')));
+        $amount = round((float) ($row['amount'] ?? 0), 2);
+
+        if (!in_array($method, $allowed, true)) {
+            throw new InvalidArgumentException('Payment methods are limited to GCash, Maya, and Cash.');
+        }
+        if (isset($seen[$method])) {
+            throw new InvalidArgumentException('A split payment must use two different methods.');
+        }
+        if ($amount <= 0) {
+            throw new InvalidArgumentException('Each payment amount must be greater than zero.');
+        }
+
+        $seen[$method] = true;
+        $sum += $amount;
+        $payments[] = ['method' => $method, 'amount' => $amount];
+    }
+
+    $sumCents = (int) round($sum * 100);
+    $totalCents = (int) round($expectedTotal * 100);
+    if (abs($sumCents - $totalCents) > 1) {
+        throw new InvalidArgumentException('Payment amounts must add up to the order total.');
+    }
+
+    return $payments;
+}
+
+/**
+ * Fetch payment rows for many orders in one query.
+ *
+ * @param array<int, int|string> $orderIds
+ * @return array<int, array<int, array{method: string, amount: float}>>
+ */
+function order_payment_rows(array $orderIds): array
+{
+    $orderIds = array_values(array_filter(array_map('intval', $orderIds)));
+    if (!$orderIds) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($orderIds), '?'));
+    $stmt = db()->prepare(
+        "SELECT order_id, method, amount
+           FROM order_payments
+          WHERE order_id IN ($placeholders)
+          ORDER BY id ASC"
+    );
+    $stmt->execute($orderIds);
+
+    $rows = [];
+    foreach ($stmt as $row) {
+        $rows[(int) $row['order_id']][] = [
+            'method' => (string) $row['method'],
+            'amount' => (float) $row['amount'],
+        ];
+    }
+    return $rows;
+}
+
+/**
+ * Fetch payment rows for one order.
+ *
+ * @return array<int, array{method: string, amount: float}>
+ */
+function order_payments_for(int $orderId): array
+{
+    return order_payment_rows([$orderId])[$orderId] ?? [];
+}
+
+/* ---------- Audit log ---------- */
+
+/**
+ * Record a staff action in the audit_log table.
+ *
+ * Never let an audit failure break the action being audited.
+ *
+ * @param array<string,mixed> $details
+ */
+function audit_log(string $action, array $details = []): void
+{
+    if (!function_exists('db')) {
+        return;
+    }
+
+    try {
+        $entity = explode('.', $action, 2)[0] ?: 'system';
+        $entityId = $details['order_id']
+            ?? $details['user_id']
+            ?? $details['product_id']
+            ?? null;
+
+        $stmt = db()->prepare(
+            'INSERT INTO audit_log (user_id, action, entity, entity_id, details, ip_address)
+             VALUES (?, ?, ?, ?, ?, ?)'
+        );
+        $stmt->execute([
+            isset($_SESSION['user_id']) ? (int) $_SESSION['user_id'] : null,
+            $action,
+            $entity,
+            $entityId !== null ? (string) $entityId : null,
+            $details ? json_encode($details, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
+            $_SERVER['REMOTE_ADDR'] ?? null,
+        ]);
+    } catch (Throwable $e) {
+        error_log('audit_log failed: ' . $e->getMessage());
+    }
 }

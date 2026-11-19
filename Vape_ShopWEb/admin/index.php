@@ -21,11 +21,11 @@ $stmt = $pdo->query("SELECT COALESCE(SUM(total), 0) as revenue FROM orders WHERE
 $totalRevenue = $stmt->fetchColumn();
 
 // Orders today
-$stmt = $pdo->query("SELECT COUNT(*) FROM orders WHERE DATE(created_at) = CURDATE()");
+$stmt = $pdo->query("SELECT COUNT(*) FROM orders WHERE DATE(placed_at) = CURDATE()");
 $ordersToday = $stmt->fetchColumn();
 
 // Orders this week
-$stmt = $pdo->query("SELECT COUNT(*) FROM orders WHERE YEARWEEK(created_at, 1) = YEARWEEK(CURDATE(), 1)");
+$stmt = $pdo->query("SELECT COUNT(*) FROM orders WHERE YEARWEEK(placed_at, 1) = YEARWEEK(CURDATE(), 1)");
 $ordersWeek = $stmt->fetchColumn();
 
 // Orders by status
@@ -72,7 +72,7 @@ $stmt = $pdo->query("
            (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count
     FROM orders o
     LEFT JOIN users u ON u.id = o.user_id
-    ORDER BY o.created_at DESC
+    ORDER BY o.placed_at DESC
     LIMIT 10
 ");
 $recentOrders = $stmt->fetchAll();
@@ -135,12 +135,12 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
         <tbody>
           <?php foreach ($recentOrders as $order): ?>
             <tr>
-              <td><a href="order.php?id=<?= (int)$order['id'] ?>" style="color:#00f0ff;"><?= e($order['order_number']) ?></a></td>
-              <td><?= e($order['first_name'].' '.$order['last_name']) ?><br><span style="color:#8b95a3;font-size:0.75rem;"><?= e($order['email']) ?></span></td>
+              <td><a href="order.php?id=<?= (int)$order['id'] ?>" style="color:var(--accent);"><?= e($order['order_number']) ?></a></td>
+              <td><?= e($order['first_name'].' '.$order['last_name']) ?><br><span style="color:var(--text-dim);font-size:0.75rem;"><?= e($order['email']) ?></span></td>
               <td><?= (int)$order['item_count'] ?></td>
               <td><?= money($order['total']) ?></td>
-              <td><span class="status-chip status-chip--<?= strtolower(e($order['status'])) ?>"><?= e($order['status']) ?></span></td>
-              <td><?= date('M d, Y g:i A', strtotime($order['created_at'])) ?></td>
+              <td><span class="status-chip status-chip--<?= strtolower(e($order['status'])) ?>"><?= e(order_status_label($order['status'])) ?></span></td>
+              <td><?= date('M d, Y g:i A', strtotime($order['placed_at'])) ?></td>
             </tr>
           <?php endforeach; ?>
         </tbody>
@@ -153,10 +153,10 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
       <h2 class="admin-card-title">Orders by Status</h2>
     </div>
     <div style="padding:1rem;display:flex;flex-direction:column;gap:0.75rem;">
-      <?php foreach (['PENDING','CONFIRMED','PROCESSING','SHIPPED','DELIVERED','CANCELLED'] as $st): ?>
+      <?php foreach (['PENDING','PAID','PACKING','SHIPPED','DELIVERED','CANCELLED'] as $st): ?>
         <div style="display:flex;justify-content:space-between;align-items:center;">
-          <span class="status-chip status-chip--<?= strtolower($st) ?>"><?= $st ?></span>
-          <span style="color:#e8edf2;font-weight:600;"><?= isset($statusCounts[$st]) ? $statusCounts[$st] : 0 ?></span>
+          <span class="status-chip status-chip--<?= strtolower($st) ?>"><?= e(order_status_label($st)) ?></span>
+          <span style="color:var(--text);font-weight:600;"><?= isset($statusCounts[$st]) ? $statusCounts[$st] : 0 ?></span>
         </div>
       <?php endforeach; ?>
     </div>
@@ -206,14 +206,14 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
         </thead>
         <tbody>
           <?php if (empty($lowStock)): ?>
-            <tr><td colspan="4" style="text-align:center;color:#8b95a3;">All well stocked</td></tr>
+            <tr><td colspan="4" style="text-align:center;color:var(--text-dim);">All well stocked</td></tr>
           <?php else: ?>
             <?php foreach ($lowStock as $ls): ?>
               <tr>
                 <td><?= e($ls['product_name']) ?></td>
                 <td><?= e($ls['strength']) ?> · <?= e($ls['flavor']) ?></td>
                 <td><?= e($ls['sku']) ?></td>
-                <td style="color:<?= $ls['stock_qty'] == 0 ? '#ff6b6b' : '#ffa94d' ?>;font-weight:600;"><?= (int)$ls['stock_qty'] ?></td>
+                <td style="color:<?= $ls['stock_qty'] == 0 ? 'var(--danger)' : 'var(--warning)' ?>;font-weight:600;"><?= (int)$ls['stock_qty'] ?></td>
               </tr>
             <?php endforeach; ?>
           <?php endif; ?>

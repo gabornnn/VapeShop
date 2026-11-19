@@ -14,7 +14,7 @@
     9.  Checkout (4 steps, validation, simulated submit, receipt)
    10.  Toast + init
 
-   localStorage keys: ageVerified, cart_v1, shipping_draft_v1
+   sessionStorage key: ageVerified; localStorage keys: cart_v1, shipping_draft_v1
    ============================================================ */
 
 'use strict';
@@ -47,6 +47,16 @@ const storage = {
   },
   remove(key) {
     try { localStorage.removeItem(key); } catch { /* ignore */ }
+  },
+};
+
+/** Age verification is per-tab and per-session. */
+const ageStorage = {
+  get() {
+    try { return sessionStorage.getItem(AGE_KEY) === '1'; } catch { return false; }
+  },
+  set() {
+    try { sessionStorage.setItem(AGE_KEY, '1'); } catch { /* private mode */ }
   },
 };
 
@@ -180,7 +190,6 @@ const CART_KEY = 'cart_v1';
 const DRAFT_KEY = 'shipping_draft_v1';
 const AGE_KEY = 'ageVerified';
 const QTY_MAX = 10;
-const VAT_RATE = 0.12;
 const FLAT_SHIPPING = 150;
 const FREE_SHIPPING_ABOVE = 2000;
 
@@ -206,9 +215,30 @@ const SORT_OPTIONS = [
 ];
 
 const PAYMENT_METHODS = [
-  { id: 'card', label: 'Credit / Debit Card', icon: 'icon-card', desc: 'Visa, Mastercard, JCB.', hint: "You'll be redirected after order placement (demo)." },
-  { id: 'gcash', label: 'E-Wallet / GCash', icon: 'icon-wallet', desc: 'Pay from your GCash or Maya balance.', hint: "You'll be redirected after order placement (demo)." },
-  { id: 'cod', label: 'Cash on Delivery', icon: 'icon-cash', desc: 'Pay the rider in cash on arrival.', hint: 'Please prepare exact change if possible.' },
+  {
+    id: 'gcash',
+    method: 'GCASH',
+    label: 'GCash',
+    icon: 'icon-wallet',
+    desc: 'Pay from your GCash wallet.',
+    hint: 'You will receive payment instructions after placing the order.',
+  },
+  {
+    id: 'maya',
+    method: 'MAYA',
+    label: 'Maya',
+    icon: 'icon-wallet',
+    desc: 'Pay from your Maya (PayMaya) wallet.',
+    hint: 'You will receive payment instructions after placing the order.',
+  },
+  {
+    id: 'cash',
+    method: 'CASH',
+    label: 'Cash',
+    icon: 'icon-cash',
+    desc: 'Pay in cash when your order arrives.',
+    hint: 'Please prepare exact change if possible.',
+  },
 ];
 
 const EMPTY_SHIPPING = { name: '', phone: '', address: '', notes: '' };
@@ -230,6 +260,11 @@ const state = {
     step: 1, // 1 summary, 2 shipping, 3 payment, 4 confirmation
     shipping: { ...EMPTY_SHIPPING, ...storage.get(DRAFT_KEY, {}) },
     payment: '',
+    paymentMode: 'single', // 'single' | 'split'
+    split: {
+      methods: ['GCASH', 'MAYA'],
+      amounts: ['', ''],
+    },
     submitting: false,
     order: null, // snapshot taken at confirmation time
   },
@@ -506,12 +541,33 @@ const ageGate = createLayer(ageGateEl, {
   initialFocus: () => $('#age-yes'),
 });
 
+/**
+ * True only when this page load is a hard refresh.
+ * Fail closed (show the gate) when the browser cannot tell us.
+ */
+function isReloadNavigation() {
+  try {
+    const nav = performance.getEntriesByType('navigation')[0];
+    if (nav && typeof nav.type === 'string') {
+      return nav.type === 'reload';
+    }
+  } catch { /* fall through */ }
+
+  try {
+    return performance.navigation?.type === 1;
+  } catch { /* fall through */ }
+
+  return true;
+}
+
 function initAgeGate() {
-  if (storage.get(AGE_KEY, false)) {
+  const mustShow = isReloadNavigation() || !ageStorage.get();
+  if (!mustShow) {
     ageGateEl.hidden = true;
     document.body.classList.remove('gate-open');
     return;
   }
+
   document.body.classList.add('gate-open');
   ageGateEl.hidden = false;
   lockLayer(ageGateEl);
@@ -519,7 +575,8 @@ function initAgeGate() {
 }
 
 $('#age-yes').addEventListener('click', () => {
-  storage.set(AGE_KEY, true);
+  ageStorage.set();
+  try { localStorage.removeItem(AGE_KEY); } catch { /* ignore */ }
   // One continuous transition: overlay fades out while the blur lifts
   ageGateEl.classList.add('is-leaving');
   document.body.classList.remove('gate-open');
@@ -535,6 +592,14 @@ $('#age-no').addEventListener('click', () => {
   // Polite, in-place, and final for the session — no alert()
   $('#age-gate-actions').hidden = true;
   $('#age-denied').hidden = false;
+});
+
+/* Back/Forward cache: never re-open the gate on a restored page. */
+window.addEventListener('pageshow', (event) => {
+  if (!event.persisted) return;
+  ageGate.close();
+  ageGateEl.hidden = true;
+  document.body.classList.remove('gate-open');
 });
 
 /* ---------- 6. Catalog ---------- */
@@ -1084,24 +1149,82 @@ function shipProgressHTML(totals) {
 /** Totals block — uses the server totals object. */
 function totalsFromLines(cart = state.cart) {
   const subtotal = cart.reduce((sum, l) => sum + l.price * l.qty, 0);
-  const vat = Math.round(subtotal * VAT_RATE * 100) / 100;
   const shipping = subtotal > 0 && subtotal < FREE_SHIPPING_ABOVE ? FLAT_SHIPPING : 0;
-  return { subtotal, vat, shipping, total: subtotal + vat + shipping };
+  return { subtotal, shipping, total: subtotal + shipping };
 }
 
-function totalsHTML(cart) {
-  const t = state.cartTotals || totalsFromLines(cart);
+function totalsHTML(cart, totals = null) {
+  const t = totals || state.cartTotals || totalsFromLines(cart);
   const subtotal = Number(t.subtotal ?? cart.reduce((sum, l) => sum + l.price * l.qty, 0));
-  const vat = Number(t.vat ?? (Math.round(subtotal * VAT_RATE * 100) / 100));
-  const shipping = Number(t.shipping ?? t.shippingFee ?? (subtotal > 0 && subtotal < FREE_SHIPPING_ABOVE ? FLAT_SHIPPING : 0));
-  const total = Number(t.total ?? (subtotal + vat + shipping));
+  const shipping = Number(t.shipping ?? t.shippingFee
+    ?? (subtotal > 0 && subtotal < FREE_SHIPPING_ABOVE ? FLAT_SHIPPING : 0));
+  const total = Number(t.total ?? (subtotal + shipping));
   return `
     <div class="totals">
       <div class="totals__row"><span>Subtotal</span><span>${money(subtotal)}</span></div>
-      <div class="totals__row"><span>VAT (12%)</span><span>${money(vat)}</span></div>
       <div class="totals__row"><span>Shipping</span><span>${shipping === 0 ? 'FREE' : money(shipping)}</span></div>
       <div class="totals__row totals__row--grand"><span>Total</span><span>${money(total)}</span></div>
     </div>`;
+}
+
+function checkoutTotal() {
+  const t = state.cartTotals || totalsFromLines(state.cart);
+  return Math.round(Number(t.total || 0) * 100) / 100;
+}
+
+function paymentMethodLabel(method) {
+  return PAYMENT_METHODS.find((m) => m.method === method)?.label || method;
+}
+
+function defaultSplitAmounts() {
+  const total = checkoutTotal();
+  const first = Math.round((total / 2) * 100) / 100;
+  const second = Math.max(0, Math.round((total - first) * 100) / 100);
+  return [first.toFixed(2), second.toFixed(2)];
+}
+
+function resetSplit() {
+  state.checkout.split = {
+    methods: ['GCASH', 'MAYA'],
+    amounts: defaultSplitAmounts(),
+  };
+}
+
+function splitRemaining() {
+  const total = checkoutTotal();
+  const [a, b] = state.checkout.split.amounts.map((v) => Number(v) || 0);
+  return Math.round((total - a - b) * 100) / 100;
+}
+
+function validatePayment() {
+  const c = state.checkout;
+  if (c.paymentMode === 'single') {
+    return c.payment ? '' : 'Choose a payment method to continue.';
+  }
+
+  const [m1, m2] = c.split.methods;
+  if (!m1 || !m2) return 'Choose two payment methods.';
+  if (m1 === m2) return 'Choose two different payment methods.';
+
+  const [a, b] = c.split.amounts.map((v) => Number(v) || 0);
+  if (a <= 0 || b <= 0) return 'Both split amounts must be greater than zero.';
+  if (Math.abs((a + b) - checkoutTotal()) > 0.01) {
+    return 'Split amounts must add up to the order total.';
+  }
+  return '';
+}
+
+function paymentsPayload() {
+  const c = state.checkout;
+  if (c.paymentMode === 'split') {
+    return c.split.methods.map((method, i) => ({
+      method,
+      amount: Math.round((Number(c.split.amounts[i]) || 0) * 100) / 100,
+    }));
+  }
+
+  const method = PAYMENT_METHODS.find((m) => m.id === c.payment)?.method || 'CASH';
+  return [{ method, amount: checkoutTotal() }];
 }
 
 function renderDrawer() {
@@ -1221,6 +1344,9 @@ function openCheckout() {
   drawerLayer.close();
   state.checkout.step = 1;
   state.checkout.order = null;
+  state.checkout.payment = '';
+  state.checkout.paymentMode = 'single';
+  state.checkout.split = { methods: ['GCASH', 'MAYA'], amounts: ['', ''] };
   checkoutOpen = true;
   document.body.classList.add('checkout-open');
   if (cartBtn) cartBtn.disabled = true;
@@ -1242,7 +1368,15 @@ function closeCheckout({ reset = false } = {}) {
   unlockLayer(checkoutEl);
   if (reset) {
     // Order placed (or explicitly abandoned): back to a clean slate
-    state.checkout = { step: 1, shipping: { ...EMPTY_SHIPPING }, payment: '', submitting: false, order: null };
+    state.checkout = {
+      step: 1,
+      shipping: { ...EMPTY_SHIPPING },
+      payment: '',
+      paymentMode: 'single',
+      split: { methods: ['GCASH', 'MAYA'], amounts: ['', ''] },
+      submitting: false,
+      order: null,
+    };
     storage.remove(DRAFT_KEY);
   }
 }
@@ -1319,23 +1453,62 @@ function renderCheckout() {
   }
 
   if (c.step === 3) {
+    const split = c.paymentMode === 'split';
+    if (split && (!c.split.amounts[0] || !c.split.amounts[1])) {
+      c.split.amounts = defaultSplitAmounts();
+    }
+
+    const remaining = splitRemaining();
+    const remainingLabel = remaining < -0.01
+      ? `Over by ${money(Math.abs(remaining))}`
+      : `Remaining: ${money(Math.max(0, remaining))}`;
+
     body = `
       <div class="checkout__panel">
-        <p class="micro-label" style="margin-bottom: var(--s3);">Select payment method</p>
-        <div class="pay-grid">
-          ${PAYMENT_METHODS.map((m) => `
-            <label class="pay-card${c.payment === m.id ? ' is-selected' : ''}">
-              <input type="radio" name="payment" value="${m.id}" ${c.payment === m.id ? 'checked' : ''}>
-              <span class="pay-card__icon"><svg aria-hidden="true"><use href="#${m.icon}"></use></svg></span>
-              <span class="pay-card__content">
-                <span class="pay-card__name">${esc(m.label)}</span>
-                <span class="pay-card__desc">${esc(m.desc)}</span>
-                <span class="pay-card__hint">${esc(m.hint)}</span>
-              </span>
-            </label>`).join('')}
+        <div class="pay-mode" role="group" aria-label="Payment mode">
+          <button type="button" class="pay-mode__btn${!split ? ' is-active' : ''}" data-pay-mode="single">Single payment</button>
+          <button type="button" class="pay-mode__btn${split ? ' is-active' : ''}" data-pay-mode="split">Split payment</button>
         </div>
-        <p class="field__error" id="pay-error" style="margin-top: var(--s3);" hidden>Choose a payment method to continue.</p>
-        <p class="micro-label" style="margin-top: var(--s3);">Demo only — no card numbers are ever collected.</p>
+
+        ${!split ? `
+          <p class="micro-label" style="margin: var(--s4) 0 var(--s3);">Select payment method</p>
+          <div class="pay-grid">
+            ${PAYMENT_METHODS.map((m) => `
+              <label class="pay-card${c.payment === m.id ? ' is-selected' : ''}">
+                <input type="radio" name="payment" value="${m.id}" ${c.payment === m.id ? 'checked' : ''}>
+                <span class="pay-card__icon"><svg aria-hidden="true"><use href="#${m.icon}"></use></svg></span>
+                <span class="pay-card__content">
+                  <span class="pay-card__name">${esc(m.label)}</span>
+                  <span class="pay-card__desc">${esc(m.desc)}</span>
+                  <span class="pay-card__hint">${esc(m.hint)}</span>
+                </span>
+              </label>`).join('')}
+          </div>` : `
+          <p class="micro-label" style="margin: var(--s4) 0 var(--s3);">Split between two methods</p>
+          <div class="split-pay">
+            ${[0, 1].map((i) => `
+              <div class="split-pay__leg">
+                <div class="split-pay__row">
+                  <label class="field__label" for="split-method-${i}">Method ${i + 1}</label>
+                  <select id="split-method-${i}" data-split-method="${i}" class="split-pay__select">
+                    ${PAYMENT_METHODS.map((m) => `
+                      <option value="${m.method}" ${c.split.methods[i] === m.method ? 'selected' : ''}>${esc(m.label)}</option>
+                    `).join('')}
+                  </select>
+                </div>
+                <div class="split-pay__row">
+                  <label class="field__label" for="split-amount-${i}">Amount</label>
+                  <input id="split-amount-${i}" data-split-amount="${i}" class="split-pay__amount"
+                         type="number" inputmode="decimal" min="0.01" step="0.01"
+                         value="${esc(c.split.amounts[i] ?? '')}">
+                </div>
+              </div>`).join('')}
+          </div>
+          <p class="split-pay__remaining" aria-live="polite">${remainingLabel}</p>
+          <p class="field__hint">The two amounts must add up to ${money(checkoutTotal())}. Change one amount and the other updates automatically.</p>`}
+
+        <p class="field__error" id="pay-error" style="margin-top: var(--s3);" hidden></p>
+        <p class="field__hint" style="margin-top: var(--s3);">No card numbers are collected. Payment is recorded for this demo.</p>
       </div>`;
     foot = `
       <button class="btn btn--ghost" data-co="back">
@@ -1363,7 +1536,7 @@ function renderCheckout() {
               <span>${money(l.price * l.qty)}</span>
             </div>`).join('')}
         </div>
-        <div class="receipt__totals">${totalsHTML(o.lines)}</div>
+        <div class="receipt__totals">${totalsHTML(o.lines, o.totals)}</div>
       </div>`;
     foot = `<button class="btn btn--accent" data-co="done">Continue shopping</button>`;
   }
@@ -1389,6 +1562,23 @@ function renderCheckout() {
 /* Checkout events (delegated — the panel re-renders per step) */
 if (checkoutEl) {
   checkoutEl.addEventListener('click', (e) => {
+    const modeBtn = e.target.closest('[data-pay-mode]');
+    if (modeBtn) {
+      const mode = modeBtn.dataset.payMode;
+      if (mode === 'split') {
+        state.checkout.paymentMode = 'split';
+        if (!state.checkout.split.amounts[0] || !state.checkout.split.amounts[1]) {
+          resetSplit();
+        }
+      } else {
+        state.checkout.paymentMode = 'single';
+      }
+      const err = $('#pay-error', checkoutEl);
+      if (err) err.hidden = true;
+      renderCheckout();
+      return;
+    }
+
     const btn = e.target.closest('[data-co]');
     if (btn) {
       const cmd = btn.dataset.co;
@@ -1430,6 +1620,34 @@ if (checkoutEl) {
 /* Step 2: draft persistence + validation on blur */
 if (checkoutEl) {
   checkoutEl.addEventListener('input', (e) => {
+    if (e.target.matches('[data-split-amount]')) {
+      const c = state.checkout;
+      const i = Number(e.target.dataset.splitAmount);
+      const other = i === 0 ? 1 : 0;
+      c.split.amounts[i] = e.target.value;
+
+      const total = checkoutTotal();
+      const entered = Number(e.target.value) || 0;
+      const remaining = Math.max(0, Math.round((total - entered) * 100) / 100);
+      const otherInput = $(`[data-split-amount="${other}"]`, checkoutEl);
+      if (otherInput) {
+        otherInput.value = remaining.toFixed(2);
+        c.split.amounts[other] = otherInput.value;
+      }
+
+      const remainingEl = $('.split-pay__remaining', checkoutEl);
+      if (remainingEl) {
+        const left = splitRemaining();
+        remainingEl.textContent = left < -0.01
+          ? `Over by ${money(Math.abs(left))}`
+          : `Remaining: ${money(Math.max(0, left))}`;
+      }
+
+      const err = $('#pay-error', checkoutEl);
+      if (err) err.hidden = true;
+      return;
+    }
+
     const field = e.target.name;
     if (['name', 'phone', 'address', 'notes'].includes(field)) {
       state.checkout.shipping[field] = e.target.value;
@@ -1438,7 +1656,15 @@ if (checkoutEl) {
   });
 
   checkoutEl.addEventListener('change', (e) => {
-    if (e.target.name === 'payment') {
+    if (e.target.matches('[data-split-method]')) {
+      const i = Number(e.target.dataset.splitMethod);
+      state.checkout.split.methods[i] = e.target.value;
+      const err = $('#pay-error', checkoutEl);
+      if (err) err.hidden = true;
+      return;
+    }
+
+    if (e.target.name === 'payment' && state.checkout.paymentMode === 'single') {
       state.checkout.payment = e.target.value;
       const err = $('#pay-error', checkoutEl);
       if (err) err.hidden = true;
@@ -1479,10 +1705,18 @@ async function placeOrder(btn) {
     window.location.href = `login.php?next=${encodeURIComponent('index.php#checkout')}`;
     return;
   }
-  if (!c.payment) {
+  const paymentError = validatePayment();
+  if (paymentError) {
     const err = $('#pay-error', checkoutEl);
-    if (err) err.hidden = false;
-    $('.pay-card input', checkoutEl)?.focus();
+    if (err) {
+      err.textContent = paymentError;
+      err.hidden = false;
+    }
+    if (state.checkout.paymentMode === 'single') {
+      $('.pay-card input', checkoutEl)?.focus();
+    } else {
+      $('[data-split-amount]', checkoutEl)?.focus();
+    }
     return;
   }
   btn.classList.add('is-loading');
@@ -1491,7 +1725,8 @@ async function placeOrder(btn) {
 
   // Final full validation before submitting
   const errs = validateShippingAll();
-  if (errs.some(Boolean) || !state.cart.length || !c.payment) {
+  const payErr = validatePayment();
+  if (errs.some(Boolean) || !state.cart.length || payErr) {
     c.submitting = false;
     btn.disabled = false;
     btn.classList.remove('is-loading');
@@ -1504,11 +1739,20 @@ async function placeOrder(btn) {
       return;
     }
     renderCheckout();
+    const err = $('#pay-error', checkoutEl);
+    if (err) {
+      err.textContent = payErr;
+      err.hidden = false;
+    }
     return;
   }
 
-  const method = PAYMENT_METHODS.find((m) => m.id === c.payment);
-  const paymentMap = { card: 'CARD', gcash: 'GCASH', cod: 'COD' };
+  const payments = paymentsPayload();
+  const paymentLabel = state.checkout.paymentMode === 'split'
+    ? 'Split — ' + payments
+        .map((p) => `${paymentMethodLabel(p.method)} ${money(p.amount)}`)
+        .join(' + ')
+    : paymentMethodLabel(payments[0].method);
 
   try {
     const data = await API.post('checkout.php', {
@@ -1518,16 +1762,16 @@ async function placeOrder(btn) {
         address: c.shipping.address,
         notes: c.shipping.notes || '',
       },
-      paymentMethod: paymentMap[c.payment] || 'COD',
+      payments,
     });
 
     c.order = {
       ref: data.orderNumber || makeRef(),
       dateLabel: new Date().toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }),
       recipient: shortName(c.shipping.name),
-      paymentLabel: method ? method.label : c.payment,
+      paymentLabel: data.paymentLabel || paymentLabel,
       lines: state.cart.map((l) => ({ ...l })),
-      totals: state.cartTotals || totalsFromLines(),
+      totals: state.cartTotals || totalsFromLines(state.cart),
     };
 
     state.cart = [];
@@ -1537,6 +1781,8 @@ async function placeOrder(btn) {
     storage.remove(DRAFT_KEY);
     c.shipping = { ...EMPTY_SHIPPING };
     c.payment = '';
+    c.paymentMode = 'single';
+    c.split = { methods: ['GCASH', 'MAYA'], amounts: ['', ''] };
     c.submitting = false;
     c.step = 4;
     btn.disabled = false;

@@ -23,11 +23,13 @@ if (!$order) {
     redirect('orders.php');
 }
 
+$payments = order_payments_for($orderId);
+
 $istmt = $pdo->prepare('SELECT * FROM order_items WHERE order_id = ? ORDER BY id');
 $istmt->execute([$orderId]);
 $items = $istmt->fetchAll();
 
-$hstmt = $pdo->prepare('SELECT * FROM order_status_history WHERE order_id = ? ORDER BY changed_at ASC, id ASC');
+$hstmt = $pdo->prepare('SELECT * FROM order_status_history WHERE order_id = ? ORDER BY created_at ASC, id ASC');
 $hstmt->execute([$orderId]);
 $history = $hstmt->fetchAll();
 
@@ -43,7 +45,7 @@ require_once __DIR__ . '/../includes/head.php';
       <div>
         <p class="micro-label">My Account</p>
         <h1 class="account__title">Order Details</h1>
-        <p style="color:#8b95a3;margin-top:0.5rem;"><?= e($order['order_number']) ?></p>
+        <p style="color:var(--text-dim);margin-top:0.5rem;"><?= e($order['order_number']) ?></p>
       </div>
       <nav class="account__nav">
         <a class="account__nav-link" href="index.php">Profile</a>
@@ -57,7 +59,7 @@ require_once __DIR__ . '/../includes/head.php';
       <a href="orders.php" class="btn btn--ghost btn--sm">← Back to Orders</a>
     </div>
 
-    <div class="account__grid" style="grid-template-columns:2fr 1fr;">
+    <div class="account__grid">
       <section class="account__card">
         <h2 class="account__card-title">Items</h2>
         <div class="order-items">
@@ -75,8 +77,23 @@ require_once __DIR__ . '/../includes/head.php';
         
         <div class="totals" style="margin-top:1.5rem;">
           <div class="totals__row"><span>Subtotal</span><span><?= money($order['subtotal']) ?></span></div>
-          <div class="totals__row"><span>VAT (<?= ($order['vat_rate']*100) ?>%)</span><span><?= money($order['vat_amount']) ?></span></div>
           <div class="totals__row"><span>Shipping</span><span><?= $order['shipping_fee'] == 0 ? 'FREE' : money($order['shipping_fee']) ?></span></div>
+          <div class="pay-breakdown">
+            <p class="micro-label">Payment</p>
+            <?php if ($payments): ?>
+              <?php foreach ($payments as $payment): ?>
+                <div class="pay-breakdown__row">
+                  <span><?= e(payment_method_label($payment['method'])) ?></span>
+                  <span><?= money($payment['amount']) ?></span>
+                </div>
+              <?php endforeach; ?>
+            <?php else: ?>
+              <div class="pay-breakdown__row">
+                <span><?= e(payment_method_label((string) $order['payment_method'])) ?></span>
+                <span><?= money($order['total']) ?></span>
+              </div>
+            <?php endif; ?>
+          </div>
           <div class="totals__row totals__row--grand"><span>Total</span><span><?= money($order['total']) ?></span></div>
         </div>
       </section>
@@ -84,14 +101,14 @@ require_once __DIR__ . '/../includes/head.php';
       <div>
         <section class="account__card" style="margin-bottom:1.5rem;">
           <h2 class="account__card-title">Order Status</h2>
-          <div class="status-chip status-chip--<?= strtolower(e($order['status'])) ?>" style="margin-bottom:1rem;"><?= e($order['status']) ?></div>
-          <p style="color:#8b95a3;font-size:0.875rem;">Placed on <?= date('M d, Y g:i A', strtotime($order['created_at'])) ?></p>
-          <p style="color:#8b95a3;font-size:0.875rem;margin-top:0.5rem;">Payment: <?= e($order['payment_method']) ?></p>
+          <div class="status-chip status-chip--<?= strtolower(e($order['status'])) ?>" style="margin-bottom:1rem;"><?= e(order_status_label($order['status'])) ?></div>
+          <p style="color:var(--text-dim);font-size:0.875rem;">Placed on <?= date('M d, Y g:i A', strtotime($order['placed_at'])) ?></p>
+          <p class="order-meta">Payment: <?= e($payments ? payment_summary_label($payments) : payment_method_label((string) $order['payment_method'])) ?></p>
         </section>
 
         <section class="account__card" style="margin-bottom:1.5rem;">
           <h2 class="account__card-title">Shipping Address</h2>
-          <p style="color:#e8edf2;line-height:1.6;">
+          <p style="color:var(--text);line-height:1.6;">
             <?= e($order['ship_to_name']) ?><br>
             <?= e($order['ship_to_phone']) ?><br>
             <?= nl2br(e($order['ship_to_address'])) ?>
@@ -106,9 +123,9 @@ require_once __DIR__ . '/../includes/head.php';
               <div class="timeline__item">
                 <div class="timeline__dot"></div>
                 <div class="timeline__content">
-                  <p class="timeline__status"><?= e($h['to_status']) ?></p>
+                  <p class="timeline__status"><?= e(order_status_label($h['to_status'])) ?></p>
                   <?php if ($h['note']): ?><p class="timeline__note"><?= e($h['note']) ?></p><?php endif; ?>
-                  <p class="timeline__time"><?= date('M d, Y g:i A', strtotime($h['changed_at'])) ?></p>
+                  <p class="timeline__time"><?= date('M d, Y g:i A', strtotime($h['created_at'])) ?></p>
                 </div>
               </div>
             <?php endforeach; ?>

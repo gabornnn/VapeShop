@@ -15,6 +15,7 @@ $last_name  = '';
 $email      = '';
 $phone      = '';
 $birthdate  = '';
+$terms      = false;
 
 $errors = [];
 
@@ -24,6 +25,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $email      = mb_strtolower(trim((string) ($_POST['email'] ?? '')));
     $phone      = trim((string) ($_POST['phone'] ?? ''));
     $birthdate  = trim((string) ($_POST['birthdate'] ?? ''));
+    $terms      = isset($_POST['terms']);
     $password   = (string) ($_POST['password'] ?? '');
     $confirm    = (string) ($_POST['confirm_password'] ?? '');
 
@@ -69,6 +71,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         } elseif ($confirm !== $password) {
             $errors['confirm_password'] = 'Passwords do not match.';
         }
+        if (!$terms) {
+            $errors['terms'] = 'You must agree to the Terms & Policy to create an account.';
+        }
 
         if (!$errors) {
             try {
@@ -83,8 +88,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 }
 
                 $stmt = $pdo->prepare(
-                    'INSERT INTO users (role_id, email, password_hash, first_name, last_name, phone, birthdate, is_active)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, 1)'
+                    'INSERT INTO users
+                       (role_id, email, password_hash, first_name, last_name, phone, birthdate,
+                        is_active, terms_accepted_at, terms_version)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW(), ?)'
                 );
                 $stmt->execute([
                     (int) $roleId,
@@ -94,6 +101,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $last_name,
                     $phone,
                     $birthdate,
+                    TERMS_VERSION,
                 ]);
 
                 $userId = (int) $pdo->lastInsertId();
@@ -210,12 +218,22 @@ require_once __DIR__ . '/includes/head.php';
           <span class="field__error" id="confirm_password-error"<?= isset($errors['confirm_password']) ? '' : ' hidden' ?>><?= e($errors['confirm_password'] ?? '') ?></span>
         </div>
 
+        <div class="field<?= isset($errors['terms']) ? ' has-error' : '' ?>">
+          <label class="check-field" for="terms">
+            <input id="terms" name="terms" type="checkbox" value="1" <?= $terms ? 'checked' : '' ?>
+                   <?= isset($errors['terms']) ? 'aria-invalid="true" aria-describedby="terms-error"' : '' ?>>
+            <span>I agree to the <a href="terms.php" target="_blank" rel="noopener">Terms &amp; Policy</a> and confirm I am 21 or older.</span>
+          </label>
+          <span class="field__error" id="terms-error"<?= isset($errors['terms']) ? '' : ' hidden' ?>><?= e($errors['terms'] ?? '') ?></span>
+        </div>
+
         <button class="btn btn--accent btn--lg btn--block" type="submit">Create account</button>
       </form>
 
       <p class="auth__alt">
         Already have an account? <a href="login.php">Sign in</a>
       </p>
+      <p class="auth__alt"><a href="terms.php">Read the Terms &amp; Policy</a></p>
     </div>
 
     <p class="auth__foot"><?= e(APP_NAME) ?> · Adults 21+ only</p>

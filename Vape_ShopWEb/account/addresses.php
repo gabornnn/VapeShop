@@ -210,7 +210,7 @@ require_once __DIR__ . '/../includes/head.php';
             <input id="postal_code" name="postal_code" type="text" value="<?= e($editAddr['postal_code'] ?? '') ?>">
           </div>
           
-          <label style="display:flex;align-items:center;gap:0.5rem;color:#e8edf2;">
+          <label style="display:flex;align-items:center;gap:0.5rem;color:var(--text);">
             <input type="checkbox" name="is_default" value="1" <?= ($editAddr && $editAddr['is_default']) || (!$editAddr && empty($addresses)) ? 'checked' : '' ?>>
             Set as default address
           </label>
@@ -225,14 +225,14 @@ require_once __DIR__ . '/../includes/head.php';
       <section class="account__card">
         <h2 class="account__card-title">Saved Addresses</h2>
         <?php if (empty($addresses)): ?>
-          <p style="color:#8b95a3;">No saved addresses yet.</p>
+          <p style="color:var(--text-dim);">No saved addresses yet.</p>
         <?php else: ?>
           <div style="display:flex;flex-direction:column;gap:1rem;">
             <?php foreach ($addresses as $addr): ?>
-              <div style="padding:1rem;border:1px solid rgba(232,237,242,0.08);border-radius:0.5rem;<?= $addr['is_default'] ? 'border-color:rgba(0,240,255,0.4);' : '' ?>">
+              <div style="padding:1rem;border:1px solid var(--border);border-radius:0.5rem;<?= $addr['is_default'] ? 'border-color:var(--border-accent);' : '' ?>">
                 <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:0.75rem;">
                   <div>
-                    <p style="color:#e8edf2;font-weight:600;"><?= e($addr['label'] ?: 'Address') ?> <?= $addr['is_default'] ? '<span style="color:#00f0ff;font-size:0.75rem;">DEFAULT</span>' : '' ?></p>
+                    <p style="color:var(--text);font-weight:600;"><?= e($addr['label'] ?: 'Address') ?> <?= $addr['is_default'] ? '<span style="color:var(--accent);font-size:0.75rem;">DEFAULT</span>' : '' ?></p>
                   </div>
                   <div style="display:flex;gap:0.5rem;">
                     <a href="addresses.php?edit=<?= (int)$addr['id'] ?>" class="btn btn--ghost btn--sm">Edit</a>
@@ -248,11 +248,11 @@ require_once __DIR__ . '/../includes/head.php';
                       <?= csrf_field() ?>
                       <input type="hidden" name="action" value="delete">
                       <input type="hidden" name="address_id" value="<?= (int)$addr['id'] ?>">
-                      <button class="btn btn--ghost btn--sm" type="submit" style="color:#ff6b6b;">Delete</button>
+                      <button class="btn btn--ghost btn--sm" type="submit" style="color:var(--danger);">Delete</button>
                     </form>
                   </div>
                 </div>
-                <p style="color:#8b95a3;line-height:1.6;font-size:0.875rem;">
+                <p style="color:var(--text-dim);line-height:1.6;font-size:0.875rem;">
                   <?= e($addr['full_name']) ?><br>
                   <?= e($addr['phone']) ?><br>
                   <?= e($addr['line1']) ?><?php if ($addr['line2']): ?>, <?= e($addr['line2']) ?><?php endif; ?><br>

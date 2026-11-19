@@ -140,15 +140,15 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
         <?php foreach ($products as $p): ?>
           <tr>
             <td>
-              <div style="font-weight:600;color:#e8edf2;"><?= e($p['name']) ?></div>
-              <div style="font-size:0.75rem;color:#8b95a3;"><?= e($p['slug']) ?></div>
+              <div style="font-weight:600;color:var(--text);"><?= e($p['name']) ?></div>
+              <div style="font-size:0.75rem;color:var(--text-dim);"><?= e($p['slug']) ?></div>
             </td>
             <td><?= e($p['category_name'] ?? '-') ?></td>
             <td><?= e($p['brand'] ?? '-') ?></td>
             <td><?= (int)$p['variant_count'] ?></td>
             <td><?= (int)$p['total_stock'] ?></td>
             <td>
-              <span class="status-chip" style="<?= $p['is_active'] ? 'background:rgba(0,240,255,0.1);color:#00f0ff;' : 'background:rgba(139,149,163,0.1);color:#8b95a3;' ?>">
+              <span class="status-chip" style="<?= $p['is_active'] ? 'background:var(--accent-soft);color:var(--accent);' : 'background:var(--surface-2);color:var(--text-dim);' ?>">
                 <?= $p['is_active'] ? 'Active' : 'Inactive' ?>
               </span>
             </td>
@@ -165,7 +165,7 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
                   <?= csrf_field() ?>
                   <input type="hidden" name="action" value="delete">
                   <input type="hidden" name="product_id" value="<?= (int)$p['id'] ?>">
-                  <button class="btn btn--ghost btn--sm" type="submit" style="color:#ff6b6b;">Archive</button>
+                  <button class="btn btn--ghost btn--sm" type="submit" style="color:var(--danger);">Archive</button>
                 </form>
               </div>
             </td>

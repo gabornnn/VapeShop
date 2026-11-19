@@ -21,21 +21,7 @@ function cart_totals(array $items): array
         $subtotal += (float) $item['price'] * (int) $item['qty'];
     }
 
-    $vat      = round($subtotal * VAT_RATE, 2);
-    $shipping = ($subtotal > 0 && $subtotal < FREE_SHIPPING_ABOVE) ? (float) FLAT_SHIPPING : 0.0;
-    $total    = round($subtotal + $vat + $shipping, 2);
-    $remaining = max(0.0, (float) FREE_SHIPPING_ABOVE - $subtotal);
-
-    return [
-        'subtotal'            => round($subtotal, 2),
-        'vat'                 => $vat,
-        'vatRate'             => VAT_RATE,
-        'shipping'            => $shipping,
-        'shippingFee'         => $shipping,
-        'freeShippingAbove'   => (float) FREE_SHIPPING_ABOVE,
-        'amountToFreeShipping' => round($remaining, 2),
-        'total'               => $total,
-    ];
+    return order_totals($subtotal);
 }
 
 /**

@@ -13,7 +13,7 @@ require_login('login.php');
 $user = current_user();
 $pdo = db();
 
-$stmt = $pdo->prepare('SELECT o.*, (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count FROM orders o WHERE o.user_id = ? ORDER BY o.created_at DESC');
+$stmt = $pdo->prepare('SELECT o.*, (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count FROM orders o WHERE o.user_id = ? ORDER BY o.placed_at DESC');
 $stmt->execute([(int)$user['id']]);
 $orders = $stmt->fetchAll();
 
@@ -40,7 +40,7 @@ require_once __DIR__ . '/../includes/head.php';
 
     <?php if (empty($orders)): ?>
       <div class="account__card">
-        <p style="text-align:center;color:#8b95a3;margin:2rem;">You haven't placed any orders yet.</p>
+        <p style="text-align:center;color:var(--text-dim);margin:2rem;">You haven't placed any orders yet.</p>
         <p style="text-align:center;"><a href="../index.php" class="btn btn--accent">Start Shopping</a></p>
       </div>
     <?php else: ?>
@@ -51,10 +51,10 @@ require_once __DIR__ . '/../includes/head.php';
               <div class="order-item__main">
                 <div class="order-item__header">
                   <span class="order-item__number"><?= e($order['order_number']) ?></span>
-                  <span class="status-chip status-chip--<?= strtolower(e($order['status'])) ?>"><?= e($order['status']) ?></span>
+                  <span class="status-chip status-chip--<?= strtolower(e($order['status'])) ?>"><?= e(order_status_label($order['status'])) ?></span>
                 </div>
                 <p class="order-item__meta">
-                  <?= date('M d, Y g:i A', strtotime($order['created_at'])) ?> · 
+                  <?= date('M d, Y g:i A', strtotime($order['placed_at'])) ?> · 
                   <?= (int)$order['item_count'] ?> item<?= (int)$order['item_count'] === 1 ? '' : 's' ?>
                 </p>
               </div>

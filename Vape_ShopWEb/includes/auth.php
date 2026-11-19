@@ -327,16 +327,20 @@ function deny_admin(): void
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Not authorised — {$name}</title>
 <style>
-  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#07090c;color:#e8edf2;
-       font-family:"Inter",system-ui,sans-serif;}
-  .box{max-width:34rem;padding:2rem;text-align:center;}
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f8f5;color:#1f2521;
+       font-family:"Inter",system-ui,sans-serif;line-height:1.6;}
+  .box{max-width:34rem;padding:2rem;text-align:center;background:#ffffff;
+       border:1px solid rgba(31,37,33,.12);border-radius:12px;box-shadow:0 1px 2px rgba(31,37,33,.06);}
   .tag{font-family:ui-monospace,Consolas,monospace;font-size:11px;letter-spacing:.18em;
-       text-transform:uppercase;color:#00f0ff;}
+       text-transform:uppercase;color:#2f6f4e;}
   h1{font-family:"Space Grotesk",system-ui,sans-serif;font-size:1.5rem;margin:.75rem 0;}
-  p{color:#8b95a3;line-height:1.6;margin:0 0 1.5rem;}
-  a{display:inline-block;padding:.75rem 1.5rem;border:1px solid #00f0ff;color:#00f0ff;
-    text-decoration:none;font-size:.8rem;letter-spacing:.1em;text-transform:uppercase;margin:0 .25rem;}
-  a.ghost{border-color:rgba(232,237,242,.14);color:#8b95a3;}
+  p{color:#5b665e;line-height:1.6;margin:0 0 1.5rem;}
+  a{display:inline-block;padding:.75rem 1.5rem;border:1px solid #2f6f4e;color:#ffffff;background:#2f6f4e;
+    border-radius:8px;text-decoration:none;font-size:.875rem;font-weight:600;margin:.25rem;}
+  a:hover{background:#265a3f;}
+  a:focus-visible{outline:2px solid #2f6f4e;outline-offset:2px;}
+  a.ghost{border-color:rgba(31,37,33,.24);color:#5b665e;background:#ffffff;}
+  a.ghost:hover{background:#eef1ec;}
 </style></head>
 <body><div class="box">
   <p class="tag">Error 403</p>

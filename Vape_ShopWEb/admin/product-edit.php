@@ -268,11 +268,11 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
       </div>
       
       <div style="display:flex;gap:1.5rem;">
-        <label style="display:flex;align-items:center;gap:0.5rem;color:#e8edf2;">
+        <label style="display:flex;align-items:center;gap:0.5rem;color:var(--text);">
           <input type="checkbox" name="is_active" value="1" <?= !isset($product) || $product['is_active'] ? 'checked' : '' ?>>
           Active
         </label>
-        <label style="display:flex;align-items:center;gap:0.5rem;color:#e8edf2;">
+        <label style="display:flex;align-items:center;gap:0.5rem;color:var(--text);">
           <input type="checkbox" name="is_featured" value="1" <?= isset($product) && $product['is_featured'] ? 'checked' : '' ?>>
           Featured
         </label>
@@ -302,7 +302,7 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
             <textarea id="flavors" name="flavors" rows="3" placeholder="Mango&#10;Watermelon&#10;Blueberry"></textarea>
           </div>
           
-          <p style="color:#8b95a3;font-size:0.875rem;">This will create all combinations. Running it again is idempotent (updates existing variants).</p>
+          <p style="color:var(--text-dim);font-size:0.875rem;">This will create all combinations. Running it again is idempotent (updates existing variants).</p>
           <button class="btn btn--accent" type="submit">Generate from Options</button>
         </form>
       </section>
@@ -334,12 +334,12 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
                     <td><input type="text" name="variants[<?= (int)$v['id'] ?>][flavor]" value="<?= e($v['flavor']) ?>" style="width:120px;padding:0.375rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);"></td>
                     <td><input type="text" name="variants[<?= (int)$v['id'] ?>][sku]" value="<?= e($v['sku']) ?>" style="width:150px;padding:0.375rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);"></td>
                     <td><input type="number" step="0.01" name="variants[<?= (int)$v['id'] ?>][price_adjustment]" value="<?= e($v['price_adjustment']) ?>" style="width:80px;padding:0.375rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);"></td>
-                    <td><input type="number" name="variants[<?= (int)$v['id'] ?>][stock_qty]" value="<?= e($v['stock_qty']) ?>" style="width:80px;padding:0.375rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);<?= $v['stock_qty'] == 0 ? 'border-color:#ff6b6b;' : '' ?>"></td>
+                    <td><input type="number" name="variants[<?= (int)$v['id'] ?>][stock_qty]" value="<?= e($v['stock_qty']) ?>" style="width:80px;padding:0.375rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);<?= $v['stock_qty'] == 0 ? 'border-color:var(--danger);' : '' ?>"></td>
                     <td><input type="checkbox" name="variants[<?= (int)$v['id'] ?>][is_active]" value="1" <?= $v['is_active'] ? 'checked' : '' ?>></td>
                   </tr>
                 <?php endforeach; ?>
                 <tr>
-                  <td colspan="6" style="text-align:center;color:#8b95a3;padding:0.75rem;">Add new variants below or use "Generate from Options" above</td>
+                  <td colspan="6" style="text-align:center;color:var(--text-dim);padding:0.75rem;">Add new variants below or use "Generate from Options" above</td>
                 </tr>
               </tbody>
             </table>

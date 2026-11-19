@@ -160,6 +160,9 @@ require_once __DIR__ . '/../includes/head.php';
       <p class="auth__alt">
         Shopping instead? <a href="../index.php">Go to the storefront</a>
       </p>
+      <p class="auth__alt">
+        New staff? <a href="register.php">Create an admin account</a>
+      </p>
     </div>
 
     <p class="auth__foot"><?= e(APP_NAME) ?> staff panel · Adults 21+ only</p>

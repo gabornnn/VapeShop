@@ -26,7 +26,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     } else {
         $newStatus = $_POST['status'] ?? '';
         $note = trim((string)($_POST['note'] ?? ''));
-        if (in_array($newStatus, ['PENDING','CONFIRMED','PROCESSING','SHIPPED','DELIVERED','CANCELLED'])) {
+        if (in_array($newStatus, ['PENDING','PAID','PACKING','SHIPPED','DELIVERED','CANCELLED'])) {
             try {
                 $pdo->beginTransaction();
                 // Get current status
@@ -71,11 +71,13 @@ if (!$order) {
     redirect('orders.php');
 }
 
+$payments = order_payments_for($orderId);
+
 $istmt = $pdo->prepare('SELECT * FROM order_items WHERE order_id = ? ORDER BY id');
 $istmt->execute([$orderId]);
 $items = $istmt->fetchAll();
 
-$hstmt = $pdo->prepare('SELECT h.*, a.first_name, a.last_name FROM order_status_history h LEFT JOIN users a ON a.id = h.changed_by WHERE h.order_id = ? ORDER BY h.changed_at ASC, h.id ASC');
+$hstmt = $pdo->prepare('SELECT h.*, a.first_name, a.last_name FROM order_status_history h LEFT JOIN users a ON a.id = h.changed_by WHERE h.order_id = ? ORDER BY h.created_at ASC, h.id ASC');
 $hstmt->execute([$orderId]);
 $history = $hstmt->fetchAll();
 
@@ -134,9 +136,24 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
         </table>
       </div>
       <div style="padding:1rem;display:flex;flex-direction:column;gap:0.5rem;max-width:300px;margin-left:auto;">
-        <div style="display:flex;justify-content:space-between;"><span style="color:#8b95a3;">Subtotal</span><span><?= money($order['subtotal']) ?></span></div>
-        <div style="display:flex;justify-content:space-between;"><span style="color:#8b95a3;">VAT (<?= ($order['vat_rate']*100) ?>%)</span><span><?= money($order['vat_amount']) ?></span></div>
-        <div style="display:flex;justify-content:space-between;"><span style="color:#8b95a3;">Shipping</span><span><?= $order['shipping_fee'] == 0 ? 'FREE' : money($order['shipping_fee']) ?></span></div>
+        <div style="display:flex;justify-content:space-between;"><span style="color:var(--text-dim);">Subtotal</span><span><?= money($order['subtotal']) ?></span></div>
+        <div style="display:flex;justify-content:space-between;"><span style="color:var(--text-dim);">Shipping</span><span><?= $order['shipping_fee'] == 0 ? 'FREE' : money($order['shipping_fee']) ?></span></div>
+        <div class="pay-breakdown">
+          <p class="micro-label">Payment</p>
+          <?php if ($payments): ?>
+            <?php foreach ($payments as $payment): ?>
+              <div class="pay-breakdown__row">
+                <span><?= e(payment_method_label($payment['method'])) ?></span>
+                <span><?= money($payment['amount']) ?></span>
+              </div>
+            <?php endforeach; ?>
+          <?php else: ?>
+            <div class="pay-breakdown__row">
+              <span><?= e(payment_method_label((string) $order['payment_method'])) ?></span>
+              <span><?= money($order['total']) ?></span>
+            </div>
+          <?php endif; ?>
+        </div>
         <div style="display:flex;justify-content:space-between;padding-top:0.75rem;border-top:1px solid var(--border);font-weight:600;font-size:1.125rem;"><span>Total</span><span><?= money($order['total']) ?></span></div>
       </div>
     </section>
@@ -151,10 +168,10 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
             <div class="timeline__item">
               <div class="timeline__dot"></div>
               <div class="timeline__content">
-                <p class="timeline__status"><?= e($h['to_status']) ?></p>
+                <p class="timeline__status"><?= e(order_status_label($h['to_status'])) ?></p>
                 <?php if ($h['note']): ?><p class="timeline__note"><?= e($h['note']) ?></p><?php endif; ?>
                 <?php if ($h['first_name']): ?><p class="timeline__note">Updated by <?= e($h['first_name'].' '.$h['last_name']) ?></p><?php endif; ?>
-                <p class="timeline__time"><?= date('M d, Y g:i A', strtotime($h['changed_at'])) ?></p>
+                <p class="timeline__time"><?= date('M d, Y g:i A', strtotime($h['created_at'])) ?></p>
               </div>
             </div>
           <?php endforeach; ?>
@@ -173,8 +190,8 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
         <div class="field">
           <label class="field__label" for="status">Status</label>
           <select id="status" name="status">
-            <?php foreach (['PENDING','CONFIRMED','PROCESSING','SHIPPED','DELIVERED','CANCELLED'] as $st): ?>
-              <option value="<?= $st ?>" <?= $order['status'] === $st ? 'selected' : '' ?>><?= $st ?></option>
+            <?php foreach (['PENDING','PAID','PACKING','SHIPPED','DELIVERED','CANCELLED'] as $st): ?>
+              <option value="<?= e($st) ?>" <?= $order['status'] === $st ? 'selected' : '' ?>><?= e(order_status_label($st)) ?></option>
             <?php endforeach; ?>
           </select>
         </div>
@@ -191,9 +208,9 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
         <h2 class="admin-card-title">Customer</h2>
       </div>
       <div style="padding:1.25rem;display:flex;flex-direction:column;gap:0.5rem;">
-        <p style="color:#e8edf2;font-weight:600;"><?= e($order['first_name'].' '.$order['last_name']) ?></p>
-        <p style="color:#8b95a3;font-size:0.875rem;"><?= e($order['email']) ?></p>
-        <p style="color:#8b95a3;font-size:0.875rem;"><?= e($order['user_phone'] ?: $order['ship_to_phone']) ?></p>
+        <p style="color:var(--text);font-weight:600;"><?= e($order['first_name'].' '.$order['last_name']) ?></p>
+        <p style="color:var(--text-dim);font-size:0.875rem;"><?= e($order['email']) ?></p>
+        <p style="color:var(--text-dim);font-size:0.875rem;"><?= e($order['user_phone'] ?: $order['ship_to_phone']) ?></p>
       </div>
     </section>
 
@@ -202,11 +219,11 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
         <h2 class="admin-card-title">Shipping Address</h2>
       </div>
       <div style="padding:1.25rem;">
-        <p style="color:#e8edf2;line-height:1.6;">
+        <p style="color:var(--text);line-height:1.6;">
           <?= e($order['ship_to_name']) ?><br>
           <?= e($order['ship_to_phone']) ?><br>
           <?= nl2br(e($order['ship_to_address'])) ?>
-          <?php if ($order['ship_to_notes']): ?><br><br><em style="color:#8b95a3;"><?= nl2br(e($order['ship_to_notes'])) ?></em><?php endif; ?>
+          <?php if ($order['ship_to_notes']): ?><br><br><em style="color:var(--text-dim);"><?= nl2br(e($order['ship_to_notes'])) ?></em><?php endif; ?>
         </p>
       </div>
     </section>
@@ -216,9 +233,12 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
         <h2 class="admin-card-title">Order Info</h2>
       </div>
       <div style="padding:1.25rem;display:flex;flex-direction:column;gap:0.5rem;">
-        <div style="display:flex;justify-content:space-between;"><span style="color:#8b95a3;">Order Date</span><span><?= date('M d, Y g:i A', strtotime($order['created_at'])) ?></span></div>
-        <div style="display:flex;justify-content:space-between;"><span style="color:#8b95a3;">Payment Method</span><span><?= e($order['payment_method']) ?></span></div>
-        <div style="display:flex;justify-content:space-between;"><span style="color:#8b95a3;">Status</span><span class="status-chip status-chip--<?= strtolower(e($order['status'])) ?>"><?= e($order['status']) ?></span></div>
+        <div style="display:flex;justify-content:space-between;"><span style="color:var(--text-dim);">Order Date</span><span><?= date('M d, Y g:i A', strtotime($order['placed_at'])) ?></span></div>
+        <div style="display:flex;justify-content:space-between;">
+          <span style="color:var(--text-dim);">Payment Method</span>
+          <span><?= e($payments ? payment_summary_label($payments) : payment_method_label((string) $order['payment_method'])) ?></span>
+        </div>
+        <div style="display:flex;justify-content:space-between;"><span style="color:var(--text-dim);">Status</span><span class="status-chip status-chip--<?= strtolower(e($order['status'])) ?>"><?= e(order_status_label($order['status'])) ?></span></div>
       </div>
     </section>
   </div>

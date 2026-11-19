@@ -31,18 +31,22 @@ if ($method === 'GET') {
         $istmt = $pdo->prepare('SELECT * FROM order_items WHERE order_id = ? ORDER BY id');
         $istmt->execute([$orderId]);
         $items = $istmt->fetchAll();
-        
-        $hstmt = $pdo->prepare('SELECT * FROM order_status_history WHERE order_id = ? ORDER BY changed_at ASC, id ASC');
+
+        $payments = order_payments_for($orderId);
+
+        $hstmt = $pdo->prepare('SELECT * FROM order_status_history WHERE order_id = ? ORDER BY created_at ASC, id ASC');
         $hstmt->execute([$orderId]);
         $history = $hstmt->fetchAll();
         
         api_ok([
             'order' => $order,
             'items' => $items,
-            'history' => $history
+            'history' => $history,
+            'payments' => $payments,
+            'paymentLabel' => payment_summary_label($payments),
         ]);
     } else {
-        $stmt = $pdo->prepare('SELECT o.*, (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count FROM orders o WHERE o.user_id = ? ORDER BY o.created_at DESC');
+        $stmt = $pdo->prepare('SELECT o.*, (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count FROM orders o WHERE o.user_id = ? ORDER BY o.placed_at DESC');
         $stmt->execute([$userId]);
         $orders = $stmt->fetchAll();
         api_ok(['orders' => $orders]);

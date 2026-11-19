@@ -85,13 +85,13 @@ function db_fail(): void
     <html lang="en">
     <head><meta charset="utf-8"><title>Store unavailable</title>
     <style>
-      body{margin:0;min-height:100vh;display:grid;place-items:center;background:#07090c;color:#e8edf2;
+      body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);
            font-family:"Inter",system-ui,sans-serif;}
       .box{max-width:32rem;padding:2rem;text-align:center;}
       h1{font-family:"Space Grotesk",system-ui,sans-serif;font-size:1.4rem;margin:0 0 .75rem;}
-      p{color:#8b95a3;line-height:1.6;margin:0 0 1.5rem;}
-      code{color:#c6ff00;font-family:ui-monospace,Consolas,monospace;}
-      a{display:inline-block;padding:.75rem 1.5rem;border:1px solid #00f0ff;color:#00f0ff;
+      p{color:var(--text-dim);line-height:1.6;margin:0 0 1.5rem;}
+      code{color:var(--accent-2);font-family:ui-monospace,Consolas,monospace;}
+      a{display:inline-block;padding:.75rem 1.5rem;border:1px solid var(--accent);color:var(--accent);
         text-decoration:none;font-size:.85rem;letter-spacing:.1em;text-transform:uppercase;}
     </style></head>
     <body><div class="box">

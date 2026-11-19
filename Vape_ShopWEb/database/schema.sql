@@ -6,7 +6,7 @@
 --    1. Open phpMyAdmin → Import → pick this file → Go.
 --       (Or from the command line:
 --        C:\xampp\mysql\bin\mysql.exe -u root < database\schema.sql)
---    2. That creates the `vape_shop` database and all 16 tables.
+--    2. That creates the `vape_shop` database and all 17 tables.
 --    3. Then seed the data:
 --         C:\xampp\php\php.exe database\import.php --confirm
 --         C:\xampp\php\php.exe database\seed_admin.php admin@vapeco.ph "Admin@123" "Cristobal" "Admin"
@@ -49,6 +49,8 @@ CREATE TABLE users (
   blocked_reason VARCHAR(255) DEFAULT NULL,
   blocked_at    DATETIME DEFAULT NULL,
   last_login_at DATETIME DEFAULT NULL,
+  terms_accepted_at DATETIME DEFAULT NULL,
+  terms_version     VARCHAR(20) DEFAULT NULL,
   created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_users_role FOREIGN KEY (role_id) REFERENCES roles(id),
@@ -154,7 +156,7 @@ CREATE TABLE orders (
   user_id         INT UNSIGNED NOT NULL,
   status          ENUM('PENDING','PAID','PACKING','SHIPPED','DELIVERED','CANCELLED')
                     NOT NULL DEFAULT 'PENDING',
-  payment_method  ENUM('CARD','GCASH','COD') NOT NULL,
+  payment_method  VARCHAR(20) NOT NULL,
   subtotal        DECIMAL(10,2) NOT NULL,
   vat_rate        DECIMAL(5,4) NOT NULL DEFAULT 0.1200,
   vat_amount      DECIMAL(10,2) NOT NULL,
@@ -171,6 +173,19 @@ CREATE TABLE orders (
   INDEX idx_orders_user (user_id),
   INDEX idx_orders_status (status),
   INDEX idx_orders_placed (placed_at)
+) ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------- order payments
+-- One row for a single payment, two rows for a split payment.
+CREATE TABLE order_payments (
+  id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  order_id   INT UNSIGNED NOT NULL,
+  method     VARCHAR(20) NOT NULL,
+  amount     DECIMAL(10,2) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_order_payments_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+  INDEX idx_order_payments_order (order_id),
+  CONSTRAINT chk_order_payments_amount CHECK (amount > 0)
 ) ENGINE=InnoDB;
 
 -- ---------------------------------------------------------------- order items (frozen snapshot)

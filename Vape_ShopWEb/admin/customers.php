@@ -126,7 +126,7 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
       <tbody>
         <?php foreach ($customers as $cust): ?>
           <tr>
-            <td style="font-weight:600;color:#e8edf2;"><?= e($cust['first_name'].' '.$cust['last_name']) ?></td>
+            <td style="font-weight:600;color:var(--text);"><?= e($cust['first_name'].' '.$cust['last_name']) ?></td>
             <td><?= e($cust['email']) ?></td>
             <td><?= e($cust['phone']) ?></td>
             <td><?= (int)$cust['order_count'] ?></td>
@@ -134,10 +134,10 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
             <td><?= date('M d, Y', strtotime($cust['created_at'])) ?></td>
             <td>
               <?php if ((int)$cust['is_active'] === 1): ?>
-                <span class="status-chip" style="background:rgba(0,240,255,0.1);color:#00f0ff;">Active</span>
+                <span class="status-chip" style="background:var(--accent-soft);color:var(--accent);">Active</span>
               <?php else: ?>
-                <span class="status-chip" style="background:rgba(255,77,106,0.1);color:#ff6b6b;">Blocked</span>
-                <?php if ($cust['blocked_reason']): ?><br><span style="font-size:0.75rem;color:#8b95a3;"><?= e($cust['blocked_reason']) ?></span><?php endif; ?>
+                <span class="status-chip" style="background:var(--danger-soft);color:var(--danger);">Blocked</span>
+                <?php if ($cust['blocked_reason']): ?><br><span style="font-size:0.75rem;color:var(--text-dim);"><?= e($cust['blocked_reason']) ?></span><?php endif; ?>
               <?php endif; ?>
             </td>
             <td>
@@ -148,7 +148,7 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
                 <?php if ((int)$cust['is_active'] === 1): ?>
                   <input type="text" name="reason" placeholder="Reason (optional)" style="padding:0.25rem 0.5rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:0.25rem;width:120px;margin-right:0.25rem;">
                 <?php endif; ?>
-                <button class="btn btn--ghost btn--sm" type="submit" style="<?= (int)$cust['is_active'] === 1 ? 'color:#ff6b6b;' : '' ?>"><?= (int)$cust['is_active'] === 1 ? 'Block' : 'Unblock' ?></button>
+                <button class="btn btn--ghost btn--sm" type="submit" style="<?= (int)$cust['is_active'] === 1 ? 'color:var(--danger);' : '' ?>"><?= (int)$cust['is_active'] === 1 ? 'Block' : 'Unblock' ?></button>
               </form>
             </td>
           </tr>

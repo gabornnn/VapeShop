@@ -29,23 +29,24 @@ $sql = "SELECT o.*, u.first_name, u.last_name, u.email,
         WHERE 1=1";
 $params = [];
 
-if ($statusFilter !== '' && in_array($statusFilter, ['PENDING','CONFIRMED','PROCESSING','SHIPPED','DELIVERED','CANCELLED'])) {
+if ($statusFilter !== '' && in_array($statusFilter, ['PENDING','PAID','PACKING','SHIPPED','DELIVERED','CANCELLED'])) {
     $sql .= " AND o.status = ?";
     $params[] = $statusFilter;
 }
 if ($dateFilter === 'today') {
-    $sql .= " AND DATE(o.created_at) = CURDATE()";
+    $sql .= " AND DATE(o.placed_at) = CURDATE()";
 } elseif ($dateFilter === 'week') {
-    $sql .= " AND YEARWEEK(o.created_at, 1) = YEARWEEK(CURDATE(), 1)";
+    $sql .= " AND YEARWEEK(o.placed_at, 1) = YEARWEEK(CURDATE(), 1)";
 } elseif ($dateFilter === 'month') {
-    $sql .= " AND MONTH(o.created_at) = MONTH(CURDATE()) AND YEAR(o.created_at) = YEAR(CURDATE())";
+    $sql .= " AND MONTH(o.placed_at) = MONTH(CURDATE()) AND YEAR(o.placed_at) = YEAR(CURDATE())";
 }
 
-$sql .= " ORDER BY o.created_at DESC";
+$sql .= " ORDER BY o.placed_at DESC";
 
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $orders = $stmt->fetchAll();
+$paymentsByOrder = order_payment_rows(array_column($orders, 'id'));
 
 $pageTitle = 'Orders — ' . APP_NAME . ' admin';
 $bodyClass = 'page-admin';
@@ -73,8 +74,8 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
     <form method="get" style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
       <select name="status" style="padding:0.5rem 0.75rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:0.375rem;">
         <option value="">All Status</option>
-        <?php foreach (['PENDING','CONFIRMED','PROCESSING','SHIPPED','DELIVERED','CANCELLED'] as $st): ?>
-          <option value="<?= $st ?>" <?= $statusFilter === $st ? 'selected' : '' ?>><?= $st ?></option>
+        <?php foreach (['PENDING','PAID','PACKING','SHIPPED','DELIVERED','CANCELLED'] as $st): ?>
+          <option value="<?= e($st) ?>" <?= $statusFilter === $st ? 'selected' : '' ?>><?= e(order_status_label($st)) ?></option>
         <?php endforeach; ?>
       </select>
       <select name="date" style="padding:0.5rem 0.75rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:0.375rem;">
@@ -107,13 +108,18 @@ require_once __DIR__ . '/../includes/admin_chrome.php';
       <tbody>
         <?php foreach ($orders as $order): ?>
           <tr>
-            <td><a href="order.php?id=<?= (int)$order['id'] ?>" style="color:#00f0ff;font-weight:600;"><?= e($order['order_number']) ?></a></td>
-            <td><?= e($order['first_name'].' '.$order['last_name']) ?><br><span style="color:#8b95a3;font-size:0.75rem;"><?= e($order['email']) ?></span></td>
+            <td><a href="order.php?id=<?= (int)$order['id'] ?>" style="color:var(--accent);font-weight:600;"><?= e($order['order_number']) ?></a></td>
+            <td><?= e($order['first_name'].' '.$order['last_name']) ?><br><span style="color:var(--text-dim);font-size:0.75rem;"><?= e($order['email']) ?></span></td>
             <td><?= (int)$order['item_count'] ?></td>
             <td><?= money($order['total']) ?></td>
-            <td><?= e($order['payment_method']) ?></td>
-            <td><span class="status-chip status-chip--<?= strtolower(e($order['status'])) ?>"><?= e($order['status']) ?></span></td>
-            <td><?= date('M d, Y g:i A', strtotime($order['created_at'])) ?></td>
+            <?php $pays = $paymentsByOrder[(int) $order['id']] ?? []; ?>
+            <td>
+              <span class="pay-summary">
+                <?= e($pays ? payment_summary_label($pays) : payment_method_label((string) $order['payment_method'])) ?>
+              </span>
+            </td>
+            <td><span class="status-chip status-chip--<?= strtolower(e($order['status'])) ?>"><?= e(order_status_label($order['status'])) ?></span></td>
+            <td><?= date('M d, Y g:i A', strtotime($order['placed_at'])) ?></td>
             <td><a href="order.php?id=<?= (int)$order['id'] ?>" class="btn btn--ghost btn--sm">View</a></td>
           </tr>
         <?php endforeach; ?>
